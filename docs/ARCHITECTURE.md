@@ -35,7 +35,7 @@ A thin display/animation client. Renders Buddy, plays the 65-emote expression
 system, shows the chat box and the vertical-stretch speech bubble, and relays
 what you type to the brain over HTTP. It holds no AI logic itself, so it always
 matches whatever the brain can do. Runs on a normal Python 3.11+ with Pillow.
-See `companion/src/` and the emote/trigger details below.
+See `companion/` and the emote/trigger details below.
 
 ### brain/ — the local AI service
 The single service every frontend talks to. Owns the persona, the tool-calling
