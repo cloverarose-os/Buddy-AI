@@ -153,20 +153,42 @@ Buddy can "see" - process an image as context for a prompt. Two input methods:
   (for webcam) grabbing a frame.
 - Vision model already selected (`gemma3:12b`).
 
-### The file-picker interaction + animation (user's design)
-A charming bit of interaction design, worth capturing verbatim:
-- Click the attach button -> Buddy extends his hand, waiting to take something.
-- On selecting a file -> he holds it a second with a THUMBNAIL of the file shown
-  on his hand.
-- Then he reaches behind his back as if pocketing it, and returns to idle -
-  signaling "I've got your file, now give me your prompt + hit send."
+### The file-picker interaction + animation (user's design, FINALIZED)
+A charming bit of interaction design:
+- Click attach -> the native file dialog opens.
+- On SUCCESSFUL selection (the same moment the button currently flips to the
+  green check), his arm comes out already holding SOMETHING that represents the
+  file, then swings over and tucks it into his pocket (front or back - whichever
+  renders cleaner), then returns to idle. Green check stays lit until send.
+- Reads as "he reached out, took your file, and pocketed it - now give me your
+  prompt + hit send."
 
-**Build split:**
-- *Function:* attach button -> file dialog -> send image to the brain's existing
-  vision path. Straightforward.
-- *Animation:* a custom emote sequence in the renderer (hand-extend -> hold ->
-  reach-behind -> idle). The one genuinely new rendering piece is compositing the
-  real file's thumbnail onto the paw for a beat. Fits the existing emote system.
+**Timing nuance (why the reach plays AFTER selection, not during):**
+The Windows file dialog is MODAL - while it's open it freezes the Tk animation
+loop, so Buddy can't visibly "reach and wait" during browsing. So the whole
+reach -> receive -> pocket plays as one continuous beat right after selection.
+Smoother than animating against a frozen loop, and still reads correctly.
+
+**What represents the file (decided):**
+- **Thumbnail preferred** (real image scaled onto the paw).
+- **Type-icon fallback** (guaranteed): camera icon for a webcam snap, picture
+  icon for an image file, later text/doc icons, etc. Branch on file type.
+
+**Future (maybe next): attach ANY useful file type**
+Not just images - text files, docs, anything fed to the model as context. The
+thumbnail-or-icon logic is being built to branch on type from the start, so
+adding new types is mostly "add an icon + a handler," not a rework. (Non-image
+context also needs a brain-side path to actually USE text/doc content, which is
+a separate piece from the animation.)
+
+**Build split / order:**
+- *Function:* attach -> file dialog -> feed the brain's vision path. DONE for
+  images.
+- *Animation phase 1:* arm choreography (rest -> extend -> pocket -> rest) reusing
+  the real rotatable wave-arm patch (NEVER hand-roll a limb). Validate motion.
+- *Animation phase 2:* composite the representation (thumbnail / icon) onto the
+  moving paw - the one genuinely new rendering piece.
+- *Later:* expand attach to any file type (+ brain-side non-image context use).
 
 ## Group 3.5: Voice (both live in the "talk to Buddy" box)
 
