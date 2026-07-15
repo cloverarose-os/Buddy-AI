@@ -48,6 +48,30 @@ generate an image). These features add new tools to that same loop.
     weaker for broad "what happened today" current-events queries.
   - Verify current free-tier limits before building (they change).
 
+#### KNOWN LIMITATION: local model paraphrases, it does not vet
+- **What web search actually does with a small (9B) model:** it feeds the model
+  the top search-result snippets, and the model PARAPHRASES them into a fluent
+  reply. It does NOT read full articles, cross-check sources, weigh credibility,
+  or build an independent picture of an event. For "what's the weather" this is
+  fine (no judgment needed). For "is it true that X did an awful thing yesterday"
+  it is NOT reliable - the answer inherits whatever the top snippets say, stated
+  with more confidence than warranted.
+- **Root cause is MODEL SIZE, not the search plumbing.** Critical synthesis -
+  distinguishing reported/alleged from confirmed, noticing when sources disagree,
+  judging trustworthiness - is a reasoning capability that scales with model
+  size. Feeding fuller article text helps a small model paraphrase more
+  ACCURATELY, but does not give it the JUDGMENT to vet. That ceiling is inherent
+  to a local 9B.
+- **Possible future consideration (NOT a committed plan):** the same kind of
+  "elevate to a frontier model" mechanism discussed for coding could also serve
+  "critically vet this news/claim." Same web_search tool underneath; a bigger
+  model does the reasoning over the results.
+- **User's stance (important):** the user is hesitant to open more doors to an
+  outside company's model, and this is NOT being pursued now. Recorded only as a
+  limitation to be aware of and a possibility to revisit, not a direction chosen.
+  In the meantime, treat Buddy's web answers as "here's what the top results say,"
+  not "here's the vetted truth."
+
 ### Terminal access
 - **Goal:** let Buddy run commands on the machine.
 - **Mechanism:** a tool that executes a shell command and returns output.
