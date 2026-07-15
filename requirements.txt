@@ -1,0 +1,11 @@
+# Buddy AI — Python dependencies
+#
+# Buddy Companion (the desktop pet) needs only Pillow; everything else it
+# uses is in the Python standard library (tkinter, http.server, urllib, etc.).
+#
+# tkinter is part of the standard library but on some Linux distros must be
+# installed separately via the system package manager (e.g. `sudo apt install
+# python3-tk`). It ships with the standard Windows and macOS python.org
+# installers.
+
+Pillow>=10.0
