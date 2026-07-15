@@ -154,20 +154,31 @@ Buddy can "see" - process an image as context for a prompt. Two input methods:
 - Vision model already selected (`gemma3:12b`).
 
 ### The file-picker interaction + animation (user's design, FINALIZED)
-A charming bit of interaction design:
-- Click attach -> the native file dialog opens.
-- On SUCCESSFUL selection (the same moment the button currently flips to the
-  green check), his arm comes out already holding SOMETHING that represents the
-  file, then swings over and tucks it into his pocket (front or back - whichever
-  renders cleaner), then returns to idle. Green check stays lit until send.
-- Reads as "he reached out, took your file, and pocketed it - now give me your
-  prompt + hit send."
+TWO distinct animations with a HELD bridge pose between them:
 
-**Timing nuance (why the reach plays AFTER selection, not during):**
-The Windows file dialog is MODAL - while it's open it freezes the Tk animation
-loop, so Buddy can't visibly "reach and wait" during browsing. So the whole
-reach -> receive -> pocket plays as one continuous beat right after selection.
-Smoother than animating against a frozen loop, and still reads correctly.
+**Animation 1 - reach out (empty hand):** the MOMENT attach OR webcam is
+clicked, Buddy goes idle -> extends his EMPTY hand outward, ready to receive.
+This plays and COMPLETES on click, before the dialog/webcam opens.
+
+**Held bridge pose:** he stays parked in the extended-empty pose for as long as
+it takes - could be a second, could be a minute while browsing. Persists
+indefinitely.
+
+**Animation 2 - receive + pocket:** once a file is selected / a frame is
+grabbed (the same moment the button flips to green check), STARTING FROM the
+held extended pose, the representation of the thing appears in his paw, and he
+carries it from extended over to his pocket (front or back - whichever renders
+cleaner), tucks it away, returns to idle. Green check stays lit until send.
+
+**Cancel path (required):** if the dialog is dismissed with no selection, or the
+webcam is closed without capturing, he must gracefully bring the empty hand BACK
+to idle - not freeze mid-reach forever.
+
+**Why this sequencing sidesteps the modal-freeze problem:**
+The Windows file dialog is MODAL - while open it freezes the Tk loop. But
+Animation 1 completes BEFORE the dialog opens, and the bridge pose is a STATIC
+hold (no animation needed while frozen). Animation 2 plays after the dialog
+closes. So we never animate against a frozen loop.
 
 **What represents the file (decided):**
 - **Thumbnail preferred** (real image scaled onto the paw).
@@ -184,11 +195,22 @@ a separate piece from the animation.)
 **Build split / order:**
 - *Function:* attach -> file dialog -> feed the brain's vision path. DONE for
   images.
-- *Animation phase 1:* arm choreography (rest -> extend -> pocket -> rest) reusing
-  the real rotatable wave-arm patch (NEVER hand-roll a limb). Validate motion.
+- *Animation phase 1:* the arm CHOREOGRAPHY, reusing the real rotatable wave-arm
+  patch (NEVER hand-roll a limb). Two motions + a held pose:
+  reach (idle -> extended-empty), the static held-extended pose, and
+  receive+pocket (extended -> pocket -> idle), plus the cancel return
+  (extended -> idle). Validate motion first.
 - *Animation phase 2:* composite the representation (thumbnail / icon) onto the
-  moving paw - the one genuinely new rendering piece.
+  paw during the receive+pocket motion - the one genuinely new rendering piece.
 - *Later:* expand attach to any file type (+ brain-side non-image context use).
+
+**Renderer mechanism (confirmed by reading the code):**
+His wave arm is a pre-sculpted patch rotated around a fixed shoulder pivot at
+body (230, 252); paw sits ~66px out from the pivot. The reach reuses this exact
+rotation. The thumbnail can be BAKED onto the paw in patch-local coords BEFORE
+rotating, so it stays glued to the paw through the motion and slides away as he
+pockets - no trig, no fake limb. A new `reach=` param on frame() drives it,
+touching zero existing emotes.
 
 ## Group 3.5: Voice (both live in the "talk to Buddy" box)
 
