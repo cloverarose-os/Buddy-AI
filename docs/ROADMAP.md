@@ -168,6 +168,53 @@ A charming bit of interaction design, worth capturing verbatim:
   reach-behind -> idle). The one genuinely new rendering piece is compositing the
   real file's thumbnail onto the paw for a beat. Fits the existing emote system.
 
+## Group 3.5: Voice (both live in the "talk to Buddy" box)
+
+Two voice features, both companion-side UI, both sharing the same home as the
+vision file-picker: a row of buttons in the talk box. They cluster naturally
+with vision - all three are "a control in the talk box that changes the input or
+output of a turn."
+
+### Voice-to-text (mic button -> fills the text box)
+- **Goal:** press a mic button, speak, and the transcription FILLS the text box
+  (you review, then hit send). NOT a live-stream/always-listening mode - a
+  fill-the-box dictation, the way Claude's app dictation works.
+- **Mechanism:** local speech recognition. **Whisper** (OpenAI's open model) is
+  the standard and runs well locally; faster-whisper / whisper.cpp are efficient
+  variants. Companion records mic audio on button press, sends to a local
+  Whisper transcription, drops the text into the input box.
+- **Effort:** moderate. Companion-side mic capture + a local Whisper process.
+  No brain change - it just fills the existing text box, so the rest of the
+  pipeline is untouched.
+- **VRAM note:** Whisper models range tiny->large; a small/base model is light
+  and plenty for dictation. Runs on CPU fine if VRAM is tight.
+
+### Text-to-speech (the COMPANION speaks)
+- **Goal:** Buddy speaks his replies from the companion itself (today TTS is
+  Piper, running on the separate Home Assistant machine; the user wants the
+  companion to talk).
+- **TTS model landscape (verified, 2026):** the user recalled "an X-something
+  better than Piper." Current findings:
+  - **Kokoro-82M (RECOMMENDED):** the best lightweight default in 2026. ~82M
+    params, Apache 2.0, ~2-3 GB VRAM or even CPU, 54 voices/8 languages, faster
+    than real time. Noticeably more natural than Piper while staying tiny. ~5
+    lines of Python to generate (pip install kokoro soundfile + espeak-ng).
+    Best fit for the 12 GB VRAM budget.
+  - **Chatterbox (Resemble AI):** quality pick, MIT license, beat ElevenLabs in
+    a (vendor-run) blind test 65% to 25%. Heavier than Kokoro.
+  - **Qwen3-TTS (Alibaba, Jan 2026):** most capable; killer feature is natural-
+    language voice direction ("speak slowly, warm tone"). Needs >=6 GB VRAM,
+    NVIDIA only - competes harder for VRAM with the other models.
+  - **Piper (current):** now positioned as the tiny-CPU/Raspberry-Pi king; fast
+    and light but the naturalness bar has moved past it.
+  - **Decision leaning:** Kokoro - the natural-but-lightweight sweet spot,
+    permissive license, coexists comfortably with the existing models. Verify
+    current state when building (TTS moves fast).
+- **Mechanism:** companion takes Buddy's reply text, runs local TTS, plays the
+  audio. Independent of the HA/Piper path (that can stay for HA announcements).
+- **Effort:** moderate. Companion-side: TTS generation + audio playback. A
+  natural pairing with lip/mouth animation later if desired.
+
 ## Group 4: Coding ability
 
 The hardest to make "genuinely useful" (the user's explicit bar). Coding skill
@@ -241,12 +288,16 @@ combo carefully (confirmation, scoping, read-only first).
 
 ## Suggested sequencing (not binding)
 
-- **Independent, can go anytime:** Web search (low effort, high daily value);
-  finishing Vision (partly built).
+- **DONE:** Web search (Brave) - built and working.
+- **Independent, can go anytime:** the "talk box" cluster - Vision file-picker
+  (partly built), voice-to-text (Whisper), and text-to-speech (Kokoro). These
+  three share the same companion-side home (buttons in the talk box) and don't
+  depend on anything else, so they're a natural batch to build together or in
+  sequence.
 - **One deliberate infrastructure build:** the Group 2 retrieval backbone -
   unlocks memory + private docs + big references together.
 - **High-power, high-risk, gate carefully:** terminal + filesystem, then wiring
   the coding channel (Gemini free tier) + the coding-mode toggle on top.
 
-Nothing here blocks anything else except within a group. Web search and vision do
-NOT wait on the retrieval backbone.
+Nothing here blocks anything else except within a group. The talk-box cluster
+(vision + voice) does NOT wait on the retrieval backbone.
