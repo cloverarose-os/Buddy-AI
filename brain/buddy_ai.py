@@ -27,6 +27,8 @@ STATUSF = _cfg.path_in("shared_dir", "llm_status.json")
 
 # Brave Web Search API key (free tier). Empty -> web search tool is not offered.
 BRAVE_KEY = _cfg.get("brave_api_key") or ""
+# Optional default location for disambiguating local searches (weather etc.).
+USER_LOCATION = _cfg.get("user_location") or ""
 
 # Home Assistant support is optional. When disabled, the brain does not serve
 # the Ollama-native facade routes (/api/*) that ONLY Home Assistant uses; the
@@ -350,6 +352,23 @@ def web_search_native(query, count=5):
     return "\n".join(lines)
 
 
+def _summarize_search_fallback(search_text):
+    """Model-free fallback when the LLM fails to phrase the results. Pulls the
+    first result's description so the user still gets the info instead of a
+    'something went wrong'. Not pretty, but never empty."""
+    for line in search_text.splitlines():
+        line = line.strip()
+        # result lines look like "1. Title - description (url)"
+        if line[:2] in ("1.", "2.") and " - " in line:
+            body = line.split(" - ", 1)[1]
+            # drop the trailing (url)
+            if body.endswith(")") and "(" in body:
+                body = body[:body.rfind("(")].strip()
+            if body:
+                return "Here's what I found: " + body
+    return "I looked it up but couldn't phrase it well. Try asking again?"
+
+
 # ===== Ollama calls (native tool-calling, no wrapper layer) =====
 def is_gaming():
     try:
@@ -612,11 +631,15 @@ def buddy_respond(user_text, history=None, image_b64=None):
     # key is configured (else web_search isn't in TOOLS anyway).
     likely_wants_search = bool(BRAVE_KEY) and any(
         kw in user_text.lower() for kw in (
-            "weather", "temperature", "forecast", "news", "today", "tonight",
-            "current", "currently", "right now", "latest", "recent", "price",
-            "cost", "score", "who won", "happening", "this week", "this year",
-            "2025", "2026", "stock", "election", "release date", "when is",
-            "when does", "how much is", "look up", "search"))
+            "weather", "temperature", "forecast", "hot", "cold", "rain",
+            "snow", "sunny", "cloudy", "humid", "wind", "outside", "feel out",
+            "news", "today", "tonight", "yesterday", "current", "currently",
+            "right now", "latest", "recent", "price", "cost", "score",
+            "who won", "who is", "what is", "happening", "this week",
+            "this year", "this month", "2024", "2025", "2026", "stock",
+            "election", "release date", "when is", "when does", "when did",
+            "how much is", "look up", "search", "google", "find out",
+            "is it true", "did ", "how many", "where is", "what time"))
 
     try:
         msg = ollama_chat(messages,
@@ -627,6 +650,7 @@ def buddy_respond(user_text, history=None, image_b64=None):
                 "image_path": None}, history
 
     img_path = None
+    last_search_result = None
     if msg.get("tool_calls"):
         history.append({"role": "assistant",
                         "content": msg.get("content") or "",
@@ -654,17 +678,40 @@ def buddy_respond(user_text, history=None, image_b64=None):
                         tool_result = f"Generation failed: {e}"
             elif name == "web_search":
                 query = str(args.get("query", user_text))[:400]
+                # If the query is location-dependent (weather, "near me", local
+                # events) but names no place, append the user's default so we
+                # don't get results for some random city.
+                if USER_LOCATION:
+                    ql = query.lower()
+                    location_words = ("weather", "temperature", "forecast",
+                                      "near me", "nearby", "around here",
+                                      "outside", "local")
+                    has_location_cue = any(w in ql for w in location_words)
+                    already_has_place = USER_LOCATION.split(",")[0].lower() in ql
+                    if has_location_cue and not already_has_place:
+                        query = f"{query} {USER_LOCATION}"
                 tool_result = web_search_native(query)
+                last_search_result = tool_result
             else:
                 tool_result = f"Tool '{name}' is not available."
             history.append({"role": "tool", "content": tool_result})
-        try:
-            final = ollama_chat(
-                [{"role": "system", "content": PERSONA}] + history,
-                use_tools=False)
-            content = final.get("content", "") or ""
-        except Exception:
-            content = ""
+        # Turn the tool result into Buddy's reply. The 9B model is flaky on
+        # this second pass (sometimes returns empty), so retry once, and if
+        # it's a web search that still comes back empty, summarize the raw
+        # results rather than showing a scary "something went wrong".
+        content = ""
+        for _attempt in range(2):
+            try:
+                final = ollama_chat(
+                    [{"role": "system", "content": PERSONA}] + history,
+                    use_tools=False)
+                content = (final.get("content", "") or "").strip()
+            except Exception:
+                content = ""
+            if content:
+                break
+        if not content and last_search_result:
+            content = _summarize_search_fallback(last_search_result)
     else:
         content = msg.get("content", "") or ""
         history.append({"role": "assistant", "content": content})

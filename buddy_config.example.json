@@ -17,6 +17,9 @@
   "_brave_api_key_note": "Optional. A free Brave Web Search API key (https://brave.com/search/api/) enables Buddy's web_search tool for current events, weather, news, etc. Leave empty to disable web search. Machine-local; never commit a real key.",
   "brave_api_key": "",
 
+  "_user_location_note": "Optional. Your default location (e.g. 'Louisville, Kentucky'). Used to disambiguate local searches like 'what's the weather' so results aren't for a random city. Leave empty to skip.",
+  "user_location": "",
+
   "home_assistant_enabled": true,
   "watchdog_enabled": true
 }

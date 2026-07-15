@@ -84,6 +84,9 @@ _WINDOWS_DEFAULTS = {
     # Brave Web Search API key (free tier). Empty = web search disabled; the
     # brain simply won't offer the tool. Machine-local, never committed.
     "brave_api_key": "",
+    # Optional: the user's default location, used to disambiguate local
+    # searches like "what's the weather" so results aren't for a random city.
+    "user_location": "",
     "home_assistant_enabled": True,
     "watchdog_enabled": True,
 }
@@ -107,6 +110,7 @@ def _defaults():
         "ollama_url":    "http://localhost:11434",
         "brain_url":     "http://localhost:8766",
         "brave_api_key": "",
+        "user_location": "",
         "home_assistant_enabled": True,
         "watchdog_enabled": True,
     }
