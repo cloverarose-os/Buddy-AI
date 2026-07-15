@@ -27,11 +27,15 @@ Image generation calls ComfyUI's node classes directly and loads three weight
 files by name. These must be placed in the corresponding ComfyUI model folders
 so the loaders can find them:
 
-| Role  | File                                    | ComfyUI folder            |
-|-------|-----------------------------------------|---------------------------|
-| UNet  | `z_image_turbo_int8_convrot.safetensors`| `models/unet/`            |
-| CLIP  | `qwen_3_4b_fp8_mixed.safetensors`       | `models/clip/` (lumina2)  |
-| VAE   | `ae.safetensors`                        | `models/vae/`             |
+| Role      | File                                    | ComfyUI folder              |
+|-----------|-----------------------------------------|-----------------------------|
+| Diffusion | `z_image_turbo_int8_convrot.safetensors`| `models/diffusion_models/`  |
+| Text enc. | `qwen_3_4b_fp8_mixed.safetensors`       | `models/text_encoders/`     |
+| VAE       | `ae.safetensors`                        | `models/vae/`               |
+
+All three come from the Hugging Face repo `Comfy-Org/z_image_turbo` (under its
+`split_files/` folders). See `docs/INSTALLER-SPEC.md` for exact download URLs
+and SHA256 checksums.
 
 These file names are what the brain references in `brain/buddy_ai.py`
 (`load_image_model`). If you substitute different weights, update those names
