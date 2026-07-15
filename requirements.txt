@@ -1,11 +1,31 @@
-# Buddy AI — Python dependencies
+# Buddy AI - Python dependencies (whole project)
 #
-# Buddy Companion (the desktop pet) needs only Pillow; everything else it
-# uses is in the Python standard library (tkinter, http.server, urllib, etc.).
+# This project has two runtime environments. They are intentionally separate
+# because the brain's image generation runs inside ComfyUI's embedded Python.
 #
-# tkinter is part of the standard library but on some Linux distros must be
-# installed separately via the system package manager (e.g. `sudo apt install
-# python3-tk`). It ships with the standard Windows and macOS python.org
-# installers.
-
+# ===================================================================
+# 1. COMPANION (the desktop pet)  -  runs on a normal Python 3.11+
+# ===================================================================
+# Only Pillow is third-party; everything else (tkinter, http.server,
+# urllib, threading) is in the standard library.
+#   tkinter ships with the python.org installer on Windows/macOS; on Linux
+#   install it via the system package manager (e.g. sudo apt install python3-tk).
 Pillow>=10.0
+
+# ===================================================================
+# 2. BRAIN (the local AI service)  -  runs on ComfyUI's embedded Python
+# ===================================================================
+# The brain calls ComfyUI's own node classes directly (in-process, no HTTP)
+# for image generation, and talks to a local Ollama server for chat/vision.
+# It therefore runs under the ComfyUI portable Python, which already provides
+# torch, the ComfyUI nodes, and their heavy dependencies - so those are NOT
+# listed here as pip installs. The brain's own code uses only the standard
+# library (http.server, urllib, json, threading).
+#
+# What the brain needs present at runtime (NOT pip-installable here):
+#   - ComfyUI (portable) + its embedded Python           (see docs/ARCHITECTURE.md)
+#   - A running Ollama server                            (https://ollama.com)
+#   - The model weights listed in docs/MODELS.md         (Hugging Face / Ollama)
+#
+# The watchdog and launchers are pure standard-library Python / PowerShell /
+# VBScript and need nothing installed beyond what the brain already requires.

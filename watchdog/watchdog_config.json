@@ -1,0 +1,44 @@
+{
+    "poll_seconds":  10,
+    "warm_on_idle":  true,
+    "warm_model":  "qwen3.5:9b",
+    "buddy_notifications":  true,
+    "gpu_util_threshold":  50,
+    "game_processes":  [
+                           "BONELAB.exe",
+                           "VRChat.exe",
+                           "Beat Saber.exe",
+                           "Lethal Company.exe",
+                           "Teardown.exe",
+                           "gmod.exe",
+                           "hl2.exe",
+                           "People Playground.exe",
+                           "REPO.exe",
+                           "FNAF_SOTM.exe",
+                           "BladeAndSorcery.exe",
+                           "Hard Bullet.exe",
+                           "portal2.exe",
+                           "BEHEMOTH.exe",
+                           "PoppyPlaytime.exe",
+                           "javaw.exe",
+                           "UltimateCustomNight.exe",
+                           "RustClient.exe"
+                       ],
+    "vr_processes":  [
+                         "vrcompositor.exe",
+                         "vrmonitor.exe"
+                     ],
+    "fullscreen_whitelist":  [
+                                 "explorer.exe",
+                                 "msedge.exe",
+                                 "chrome.exe",
+                                 "opera.exe",
+                                 "operagx.exe",
+                                 "firefox.exe",
+                                 "vlc.exe",
+                                 "Claude.exe",
+                                 "SKYBOX.exe",
+                                 "Spotify.exe",
+                                 "Discord.exe"
+                             ]
+}

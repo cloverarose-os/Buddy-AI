@@ -49,6 +49,61 @@ EMOTES = {
     "exhausted", "frustrated", "huffing", "mad", "angry", "furious",
     "mischievous",
 }
+
+# --- image-request detection (companion side) ----------------------------
+# The brain ultimately decides (via the model's tool call) whether to make an
+# image, and that generation is slow (tens of seconds). To avoid Buddy sitting
+# silent on "..." the whole time, the companion does a lightweight keyword
+# check the instant you hit send: if the message clearly asks for a picture, we
+# immediately show an in-personality "give me a sec" line while the thinking
+# animation runs. It only needs to catch the common phrasings; a miss just
+# means the old silent behavior, and we bias AWAY from false positives so
+# ordinary sentences that merely mention a "picture" don't trigger it.
+_IMG_VERBS = ("make", "generate", "create", "draw", "paint", "render",
+              "design", "sketch", "gimme", "give me", "show me", "whip up",
+              "cook up", "conjure", "produce")
+_IMG_NOUNS = ("image", "picture", "pic", "art", "artwork", "drawing",
+              "painting", "illustration", "wallpaper", "portrait", "sketch",
+              "render", "photo")
+
+import re as _re_img
+# 'draw' and 'paint' are strong enough to fire on their own (with an optional
+# 'me'), except for common idioms ('draw a conclusion/line', etc.).
+_re_img_draw = _re_img.compile(
+    r"\b(?:draw|paint)(?:\s+me)?\b(?!\s+(?:a\s+|the\s+|your\s+)?"
+    r"(?:line|lines|conclusion|conclusions|attention|near|close|blood|"
+    r"breath|the\s+curtains|water|straw))")
+_re_img_verbnoun = _re_img.compile(
+    r"\b(?:make|generate|create|render|design|sketch|conjure|produce|"
+    r"whip up|cook up|gimme|give me|show me)\b[\w\s,'-]{0,30}?\b"
+    r"(?:image|picture|pic|artwork|drawing|painting|illustration|wallpaper|"
+    r"portrait|render|photo)\b")
+
+
+def looks_like_image_request(text):
+    """True if the message plainly asks Buddy to CREATE an image. Requires an
+    image-creation verb reasonably close BEFORE an image noun, so 'draw me a
+    cat' or 'make an image of a robot' fire, but 'that picture was nice' or
+    'I like your art' do not."""
+    t = " " + text.lower().strip() + " "
+    # 'draw' + almost anything is an image request even without a noun
+    if _re_img_draw.search(t):
+        return True
+    # verb ... noun within a short window
+    return bool(_re_img_verbnoun.search(t))
+
+
+# rotating in-personality "hang on, making it" lines (no em dashes; ellipses
+# fit the pause and match the TTS-friendly style)
+_IMG_ACK_LINES = [
+    "Ooh, fun... let me paint that for you! Give me a sec...",
+    "On it! Good art takes a moment... hang tight!",
+    "Yesss, let me cook something up for you... one moment!",
+    "Ooh I love making these... gimme a few seconds!",
+    "Warming up my paintbrush... this'll take a moment!",
+    "Let me work my magic... image incoming, just a sec!",
+]
+
 # Emoji -> emote. If the model's reply text contains one of these, it
 # ALWAYS wins over the JSON "emote" tag (JSON is the fallback only).
 EMOJI_TO_EMOTE = {
@@ -605,14 +660,27 @@ class Buddy:
                               "gets all the VRAM - ask me after the "
                               "session!", "emote": "sleepy"})
             return
-        self.msg = "..."
-        # Thinking must stay active at least as long as brain_worker's own
+        # If this plainly looks like an image request, acknowledge it right
+        # away in-personality (image gen is slow; otherwise Buddy just sits
+        # silent on "..."). The real reply/image still arrives when the brain
+        # finishes and overwrites this. A brief excited beat, then the thinking
+        # animation runs for the rest of the wait (which you're fine with).
+        if looks_like_image_request(txt):
+            self.msg = random.choice(_IMG_ACK_LINES)
+            # excited for a moment as the acknowledgment lands, then thinking
+            # carries the rest of the (long) generation wait
+            self.set_emote("excited", 3)
+            self.root.after(3000, lambda: self.set_emote("thinking", 182)
+                            if self.msg else None)
+        else:
+            self.msg = "..."
+            self.set_emote("thinking", 185)
+        # Thinking/ack must stay up at least as long as brain_worker's own
         # network timeout (180s) - otherwise a legitimately-slow request
         # (cold-start image gen, or queued behind another one) makes the
         # animation give up and look "failed" right before the real
         # result arrives. 185s gives a small buffer beyond that timeout.
         self.msg_until = time.time() + 185
-        self.set_emote("thinking", 185)
         threading.Thread(target=self.brain_worker, args=(txt,),
                          daemon=True).start()
 
@@ -712,7 +780,17 @@ class Buddy:
                 self.msg = str(d.get("text", ""))
                 self.msg_until = time.time() + max(
                     14.0, min(60.0, len(self.msg) / 3.0))
-                self.set_emote(d.get("emote", "happy"), 20)
+                # Emoji in the actual reply text ALWAYS wins; the JSON "emote"
+                # tag is only the fallback when the text has no emotion emoji.
+                # (This mirrors the inbox path. Previously check_queue used the
+                # JSON tag alone and fell straight to "happy", so emoji in the
+                # reply were ignored and Buddy over-defaulted to happy.)
+                emoji_emote = emote_from_text(self.msg)
+                if emoji_emote:
+                    chosen = emoji_emote
+                else:
+                    chosen = d.get("emote") or "happy"
+                self.set_emote(chosen, 20)
                 stamp = time.strftime("%Y-%m-%d %H:%M:%S")
                 with open(LOG, "a", encoding="utf-8") as lg:
                     lg.write(f"[{stamp}] BUDDY: {self.msg}\n")
@@ -3574,9 +3652,29 @@ def is_gaming():
 
 
 COMFY_HOST = "http://localhost:8188"
-BRAIN_LAN_IP = "192.168.4.112"  # this machine's LAN IP, for URLs given to
-                                # external callers (NAS/HA) who can't use
-                                # "localhost" since that means THEIR machine
+
+
+def _detect_lan_ip():
+    """This machine's own LAN IP, derived at runtime - needed when we hand an
+    image URL to an EXTERNAL caller (NAS / Home Assistant), because "localhost"
+    in that URL would mean THEIR machine, not ours. Opening a UDP socket toward
+    a public address doesn't actually send anything; it just makes the OS pick
+    the primary outbound interface so we can read its local address. Falls back
+    to localhost if detection fails (single-machine setups still work)."""
+    import socket
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        if s is not None:
+            s.close()
+
+
+BRAIN_LAN_IP = _detect_lan_ip()
 
 
 def generate_zimage(prompt, filename_prefix="buddy"):

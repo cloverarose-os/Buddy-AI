@@ -29,3 +29,26 @@ _*.py
 _*.png
 _*.ps
 *.bak-*
+
+# --- Brain / stack runtime logs & state ---
+*.log
+stack.log
+requests.log
+watchdog.log
+err.log
+out.log
+backups/
+
+# --- Large external dependencies (installed separately, see docs/MODELS.md) ---
+ComfyUI_windows_portable/
+_retired/
+*.safetensors
+*.ckpt
+*.gguf
+*.pt
+*.bin
+models/
+
+# --- Private dev runbooks (internal working notes, not for the repo) ---
+STACK-STATE.md
+STACK-STATE-*.md
