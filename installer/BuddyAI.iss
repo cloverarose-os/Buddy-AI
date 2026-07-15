@@ -44,7 +44,6 @@ var
   InstallTypePage: TInputOptionWizardPage;
   BrainUrlPage: TInputQueryWizardPage;
   OptionsPage: TInputOptionWizardPage;
-  IsCompanionOnly: Boolean;
 
 procedure InitializeWizard;
 begin
@@ -126,7 +125,8 @@ end;
   It blocks progress if disk space is insufficient. }
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  InstallerDir, Root, ITypeStr, OutFile, PfJson: String;
+  InstallerDir, Root, ITypeStr, OutFile: String;
+  PfJson: AnsiString;
   RC: Integer;
 begin
   Result := True;
@@ -167,21 +167,21 @@ begin
   Pay := Root + '\_installer\payload\';
   { companion always }
   ForceDirectories(Root + '\companion');
-  FileCopy(Pay + 'companion\buddy.py',          Root + '\companion\buddy.py', False);
-  FileCopy(Pay + 'companion\skin_highres.py',   Root + '\companion\skin_highres.py', False);
-  FileCopy(Pay + 'companion\buddy_config.py',   Root + '\companion\buddy_config.py', False);
+  CopyFile(Pay + 'companion\buddy.py',          Root + '\companion\buddy.py', False);
+  CopyFile(Pay + 'companion\skin_highres.py',   Root + '\companion\skin_highres.py', False);
+  CopyFile(Pay + 'companion\buddy_config.py',   Root + '\companion\buddy_config.py', False);
   { launchers always (companion-only still needs the pet launcher) }
   ForceDirectories(Root + '\launchers');
   { note: the payload\launchers folder is copied wholesale via a helper below }
   if not IsCompanion then
   begin
     ForceDirectories(Root + '\brain');
-    FileCopy(Pay + 'brain\buddy_ai.py',        Root + '\brain\buddy_ai.py', False);
-    FileCopy(Pay + 'brain\buddy_config.py',    Root + '\brain\buddy_config.py', False);
+    CopyFile(Pay + 'brain\buddy_ai.py',        Root + '\brain\buddy_ai.py', False);
+    CopyFile(Pay + 'brain\buddy_config.py',    Root + '\brain\buddy_config.py', False);
     ForceDirectories(Root + '\watchdog');
-    FileCopy(Pay + 'watchdog\watchdog.py',         Root + '\watchdog\watchdog.py', False);
-    FileCopy(Pay + 'watchdog\watchdog_config.json',Root + '\watchdog\watchdog_config.json', False);
-    FileCopy(Pay + 'watchdog\buddy_config.py',     Root + '\watchdog\buddy_config.py', False);
+    CopyFile(Pay + 'watchdog\watchdog.py',         Root + '\watchdog\watchdog.py', False);
+    CopyFile(Pay + 'watchdog\watchdog_config.json',Root + '\watchdog\watchdog_config.json', False);
+    CopyFile(Pay + 'watchdog\buddy_config.py',     Root + '\watchdog\buddy_config.py', False);
   end;
 end;
 
