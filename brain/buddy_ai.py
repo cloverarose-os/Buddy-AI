@@ -7,6 +7,7 @@ native and in-process. Owns: persona, tool-calling loop, image generation
 """
 import sys, os, json, time, threading
 import urllib.request
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Config loader lives beside this file; all machine-specific paths come from it
@@ -23,6 +24,9 @@ CHAT_MODEL = "qwen3.5:9b"
 VISION_MODEL = "gemma3:12b"
 HTTP_PORT = 8766
 STATUSF = _cfg.path_in("shared_dir", "llm_status.json")
+
+# Brave Web Search API key (free tier). Empty -> web search tool is not offered.
+BRAVE_KEY = _cfg.get("brave_api_key") or ""
 
 # Home Assistant support is optional. When disabled, the brain does not serve
 # the Ollama-native facade routes (/api/*) that ONLY Home Assistant uses; the
@@ -51,6 +55,20 @@ PERSONA_CORE = (
     "'what's 5 times 6'.\n"
     "Examples that SHOULD call generate_image: 'make an image of a cat', "
     "'draw me a sunset', 'can you create a picture of a robot'.\n\n"
+    "WEB SEARCH RULE - READ CAREFULLY: you HAVE a web_search tool and you "
+    "CAN look things up on the internet right now. Whenever the user asks "
+    "about anything current, live, recent, or factual that you are not "
+    "certain of - today's weather, news, current events, prices, scores, "
+    "recent releases, or anything that may have changed after your "
+    "training - you MUST call web_search instead of saying you can't check "
+    "or don't have live access. Never claim you cannot access the internet "
+    "or live data; you can, via web_search. After the results come back, "
+    "answer naturally in your own voice using them.\n"
+    "Examples that SHOULD call web_search: 'what's the weather', 'what "
+    "happened in the news today', 'who won the game', 'what's the price of "
+    "X', 'is X still going on', 'latest on Y'.\n"
+    "Do NOT call web_search for greetings, opinions, math, creative "
+    "writing, or things you already reliably know.\n\n"
     "CRITICAL: when you decide an image should be made, you MUST actually "
     "invoke the generate_image function call - never just describe, "
     "narrate, or pretend an image exists in your text reply without "
@@ -179,6 +197,32 @@ TOOLS = [{
     },
 }]
 
+# Web search tool - only offered when a Brave API key is configured, so the
+# model never tries to call a capability that isn't set up.
+_WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": ("Search the web for CURRENT, up-to-date, or factual "
+                        "information the assistant may not know: today's news, "
+                        "current events, weather, recent releases, prices, "
+                        "sports scores, or anything time-sensitive or after "
+                        "your training. Do NOT call for greetings, opinions, "
+                        "creative writing, or things you already know."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "The search query - concise keywords, "
+                                         "like you'd type into a search box."}
+            },
+            "required": ["query"],
+        },
+    },
+}
+if BRAVE_KEY:
+    TOOLS.append(_WEB_SEARCH_TOOL)
+
 # ===== Native image generation (ComfyUI's nodes as a library, no server) =====
 _img_lock = threading.Lock()
 _img = {"loaded": False, "model": None, "clip": None, "vae": None}
@@ -261,6 +305,49 @@ def generate_image_native(prompt, filename_prefix="buddyai"):
     sub = info.get("subfolder", "")
     return os.path.join(out_dir, sub, info["filename"]) if sub else \
         os.path.join(out_dir, info["filename"])
+
+
+# ===== Web search (Brave Web Search API, free tier) =====
+def web_search_native(query, count=5):
+    """Query Brave and return a compact, model-readable summary of the top
+    results (title, description, url). Returns a short error string on any
+    failure so the model can tell the user gracefully rather than crashing."""
+    if not BRAVE_KEY:
+        return "Web search is not configured (no API key)."
+    q = str(query).strip()[:400]
+    if not q:
+        return "No search query was provided."
+    url = ("https://api.search.brave.com/res/v1/web/search?q="
+           + urllib.parse.quote(q) + "&count=" + str(int(count)))
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/json",
+        "X-Subscription-Token": BRAVE_KEY,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return "Web search hit its rate limit; try again in a moment."
+        return f"Web search failed (HTTP {e.code})."
+    except Exception as e:
+        return f"Web search failed: {e}"
+
+    results = (data.get("web") or {}).get("results") or []
+    if not results:
+        return f"No web results found for '{q}'."
+    import html as _html
+    lines = [f"Web results for '{q}':"]
+    for i, res in enumerate(results[:count], 1):
+        title = (res.get("title") or "").strip()
+        desc = (res.get("description") or "").strip()
+        link = (res.get("url") or "").strip()
+        # strip Brave's <strong> highlight tags and unescape HTML entities
+        desc = desc.replace("<strong>", "").replace("</strong>", "")
+        title = _html.unescape(title)
+        desc = _html.unescape(desc)
+        lines.append(f"{i}. {title} - {desc} ({link})")
+    return "\n".join(lines)
 
 
 # ===== Ollama calls (native tool-calling, no wrapper layer) =====
@@ -520,8 +607,20 @@ def buddy_respond(user_text, history=None, image_b64=None):
             "illustrat", "generate a", "make a", "make me a", "create a",
             "create an", "imagine a", "render", "artwork", "sketch"))
 
+    # Parallel soft gate for web search: offer tools when the message looks
+    # like it wants current/live/factual info. Only meaningful when a Brave
+    # key is configured (else web_search isn't in TOOLS anyway).
+    likely_wants_search = bool(BRAVE_KEY) and any(
+        kw in user_text.lower() for kw in (
+            "weather", "temperature", "forecast", "news", "today", "tonight",
+            "current", "currently", "right now", "latest", "recent", "price",
+            "cost", "score", "who won", "happening", "this week", "this year",
+            "2025", "2026", "stock", "election", "release date", "when is",
+            "when does", "how much is", "look up", "search"))
+
     try:
-        msg = ollama_chat(messages, use_tools=likely_wants_image)
+        msg = ollama_chat(messages,
+                          use_tools=(likely_wants_image or likely_wants_search))
     except Exception as e:
         return {"text": f"Brain hiccup: {type(e).__name__} - is Ollama "
                         "running?", "emote": "worried",
@@ -553,6 +652,9 @@ def buddy_respond(user_text, history=None, image_b64=None):
                                       f"{os.path.basename(img_path)}")
                     except Exception as e:
                         tool_result = f"Generation failed: {e}"
+            elif name == "web_search":
+                query = str(args.get("query", user_text))[:400]
+                tool_result = web_search_native(query)
             else:
                 tool_result = f"Tool '{name}' is not available."
             history.append({"role": "tool", "content": tool_result})

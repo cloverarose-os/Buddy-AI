@@ -81,6 +81,9 @@ _WINDOWS_DEFAULTS = {
     # all-in-one machine; a companion-only / remote machine sets this to the
     # brain host, e.g. "http://brain-host:8766" or a tunnel DNS name.
     "brain_url":     "http://localhost:8766",
+    # Brave Web Search API key (free tier). Empty = web search disabled; the
+    # brain simply won't offer the tool. Machine-local, never committed.
+    "brave_api_key": "",
     "home_assistant_enabled": True,
     "watchdog_enabled": True,
 }
@@ -103,6 +106,7 @@ def _defaults():
         "shared_dir":    os.path.join(root, "shared"),
         "ollama_url":    "http://localhost:11434",
         "brain_url":     "http://localhost:8766",
+        "brave_api_key": "",
         "home_assistant_enabled": True,
         "watchdog_enabled": True,
     }
