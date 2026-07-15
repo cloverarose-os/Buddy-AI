@@ -37,8 +37,16 @@ generate an image). These features add new tools to that same loop.
   of RAG - the retrieval source is the live web, via an API call.
 - **Effort:** relatively low - it slots into the existing tool loop. Mostly
   "define the tool + pick a search provider."
-- **Open question:** which search API (there are free/paid options; some need a
-  key). Decide based on cost + quality.
+- **Provider decision:** the user wants the BEST FREE option. Findings:
+  - **Brave Search API (recommended):** genuine free tier (~2,000 queries/mo),
+    a real independent index, clean structured results, needs a free API key.
+    Best free general-search quality.
+  - **Tavily:** purpose-built for LLMs (returns pre-summarized, LLM-ready
+    results), free tier ~1,000 queries/mo, needs a key. Easiest to wire in;
+    close second.
+  - **DuckDuckGo:** no key at all, truly free, but its instant-answer API is
+    weaker for broad "what happened today" current-events queries.
+  - Verify current free-tier limits before building (they change).
 
 ### Terminal access
 - **Goal:** let Buddy run commands on the machine.
@@ -138,35 +146,74 @@ A charming bit of interaction design, worth capturing verbatim:
 
 ## Group 4: Coding ability
 
-The hardest to make "genuinely useful" (the user's explicit bar), and the one
-capability that RAG and fine-tuning CANNOT manufacture. Coding skill comes from
-the base model.
+The hardest to make "genuinely useful" (the user's explicit bar). Coding skill
+comes from the MODEL - RAG and fine-tuning cannot manufacture it. RAG can only
+GROUND a capable model in your own codebase; fine-tuning is expensive, slow, and
+won't match a purpose-built coder, so it's off the table.
 
-### The three approaches, honestly ranked
+### DECISION (reached): Gemini free-tier API, human fallback to the app
 
-1. **Swap in a specialized coding model (RECOMMENDED).** Purpose-built coding
-   models (e.g. Qwen-Coder, DeepSeek-Coder families) are dramatically better at
-   code than a general 9B. They run via Ollama exactly like the current models.
-   This is the real lever for "genuinely useful."
-2. **RAG for code (COMPLEMENT, not a substitute).** Letting the model see YOUR
-   actual codebase (via the Group 2 backbone) grounds it in your project - useful
-   ON TOP of a good coding model, but it does not create coding ability.
-3. **Fine-tune the current model (NOT RECOMMENDED).** Expensive, slow, needs a
-   training dataset, and realistically won't match a purpose-built coding model.
-   Off the table for this goal.
+The chosen approach routes coding OFF-SITE to a frontier model rather than
+running a local coding model. The user accepted letting the self-hosted principle
+go for THIS ONE category, in exchange for frontier-quality coding.
 
-### The real tradeoff to decide
-VRAM budget. The machine can only hold so many models loaded at once (chat +
-vision + embedding already). A dedicated coding model is either:
-- a SWAP (unload chat, load coder when coding), or
-- a memory-budget decision (can the GPU hold another large model?).
-The RTX 4070 (12 GB baseline) constrains this. Decide swap-vs-coexist when the
-feature is actually taken on.
+- **Built-in coding channel:** route "coding mode" requests to the **Gemini free
+  tier** (a real free API tier; usable for personal volume). Cost: **$0 extra.**
+- **Fallback:** when the built-in result isn't good enough, the USER manually
+  takes the problem to their existing **$20/month Claude/Gemini app subscription**
+  (money already spent). This fallback is a HUMAN workflow, not code - Buddy does
+  not auto-escalate. So there is no metered API that can surprise-bill.
+- **Net monthly cost of the feature: $0** beyond the subscription already paid.
 
-### Dependency
-If code coding is paired with terminal + filesystem access (Group 1), that's what
-makes it able to actually DO things, not just suggest code. That combo is the
-"trustworthy enough" bar the user named - so gate it carefully.
+### Why not the other paths (recorded so it isn't re-litigated)
+
+- **Local specialized coding model** (Qwen-Coder / DeepSeek-Coder via Ollama):
+  fully self-hosted and free per use, but quality is capped by what a ~7-14B
+  model on a 12 GB card can do, and it competes for VRAM. Viable, but the user
+  preferred frontier quality for this one category.
+- **Paid frontier API with a hard cap** (e.g. Claude API, prepaid/capped):
+  surprise-proof via a hard cap, does NOT train on your data, frontier quality -
+  BUT it is a SEPARATE meter from the $20 app subscription, so it costs MORE than
+  $20 total. The user's line was "not one dollar over $20," which ruled this out.
+  (Note for future reference: a heavy session like the one that built this
+  installer could plausibly approach ~$20 of premium-API tokens on its own -
+  which is exactly why, if the API path is ever chosen, it should be a SURGICAL
+  tool with a hard prepaid cap, not the default channel.)
+
+### The privacy caveat (conscious tradeoff)
+The Gemini free tier may use submitted data to improve Google's models. For the
+user's own hobby code this is acceptable, but it IS the reason this is a real
+exception to the self-hosted principle - not a costless one. Named so the choice
+stays conscious.
+
+### VRAM note (now mostly moot for coding)
+Because coding routes off-site, it uses **zero local VRAM** - it never disturbs
+image gen, vision, or chat. (Recorded model sizes, for the other groups' sake:
+chat qwen3.5:9b ~6.6 GB, vision gemma3:12b ~8.1 GB, embed nomic-embed-text
+~0.27 GB, on a 12 GB RTX 4070. The image stack - diffusion ~5.9 GB + text encoder
+~5.4 GB - is the real VRAM hog and the thing that must never share VRAM with a
+second large model. A specialized coding model, IF ever used locally, holds its
+OWN conversation about the code - no parallel chat model needed - and the tiny
+embedding model for RAG coexists with it fine; the conflict is only with image
+gen and vision.)
+
+### The mode toggle (companion-side design)
+A selector in the "talk to Buddy" box puts Buddy in **coding mode**:
+- In coding mode -> requests route to the coding channel (Gemini free tier).
+- Otherwise -> the standard local model set.
+- The mode is a SESSION state (set by the toggle, sent with each request), not
+  re-declared per message. It's the natural place to also apply (or drop) the
+  Buddy persona for coding, and - if a local coder is ever used instead - to
+  signal "safe to unload the other models now."
+- Home Assistant / remote callers don't send the flag, so the brain defaults to
+  the standard model for them (correct - you don't code through HA).
+- Brain-side: add a code path alongside the existing CHAT_MODEL / VISION_MODEL
+  selection; pick the channel per-request from the mode flag.
+
+### Dependency on Group 1
+Pairing coding with terminal + filesystem access is what lets Buddy actually DO
+things, not just suggest code - the user's "trustworthy enough" bar. Gate that
+combo carefully (confirmation, scoping, read-only first).
 
 ## Suggested sequencing (not binding)
 
@@ -174,8 +221,8 @@ makes it able to actually DO things, not just suggest code. That combo is the
   finishing Vision (partly built).
 - **One deliberate infrastructure build:** the Group 2 retrieval backbone -
   unlocks memory + private docs + big references together.
-- **High-power, high-risk, gate carefully:** terminal + filesystem, then a
-  specialized coding model on top.
+- **High-power, high-risk, gate carefully:** terminal + filesystem, then wiring
+  the coding channel (Gemini free tier) + the coding-mode toggle on top.
 
 Nothing here blocks anything else except within a group. Web search and vision do
 NOT wait on the retrieval backbone.
