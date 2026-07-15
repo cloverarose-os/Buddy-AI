@@ -78,6 +78,10 @@ hear replies via a TTS engine like Piper. See
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the four components fit
   together and talk.
 - [`docs/MODELS.md`](docs/MODELS.md) — the external model dependencies.
+- [`docs/INSTALLER-SPEC.md`](docs/INSTALLER-SPEC.md) — the Windows installer spec
+  (download sources, wizard flow, install layout).
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — planned capabilities (memory/RAG, web
+  search, vision, terminal/filesystem, coding), grouped by mechanism.
 
 ## Contributing
 
