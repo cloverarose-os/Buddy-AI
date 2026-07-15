@@ -1,0 +1,11 @@
+# Installer build artifacts - source is committed, generated/binary is not.
+
+# Generated at build time from the repo's own app code (prepare_payload.ps1)
+payload/
+
+# Bundled binary tool - fetched during build setup, not committed
+tools/7zr.exe
+
+# Inno Setup compiler output
+Output/
+*.exe
