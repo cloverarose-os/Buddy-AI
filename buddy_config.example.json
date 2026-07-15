@@ -1,0 +1,19 @@
+{
+  "_comment": "Example Buddy AI config. Copy to 'buddy_config.json' and edit. The installer writes this file with your chosen locations. Every key is optional; anything omitted falls back to a built-in default. Search order: BUDDY_CONFIG env var, then next to a component, then the component's parent folder, then the OS-standard location (%LOCALAPPDATA%\\BuddyAI on Windows, $XDG_CONFIG_HOME/buddyai on Linux).",
+
+  "companion_dir": "C:\\BuddyAI\\companion",
+  "brain_dir": "C:\\BuddyAI\\brain",
+  "watchdog_dir": "C:\\BuddyAI\\watchdog",
+  "comfyui_dir": "C:\\BuddyAI\\ComfyUI_windows_portable",
+  "ollama_models": "C:\\BuddyAI\\models\\ollama",
+
+  "shared_dir": "C:\\BuddyAI\\shared",
+
+  "ollama_url": "http://localhost:11434",
+
+  "_brain_url_note": "Where the COMPANION reaches the brain. Leave as localhost for an all-in-one machine. On a companion-only / remote machine, set this to the brain host, e.g. 'http://BRAIN-HOST-OR-IP:8766' or a tunnel DNS name like 'https://buddy.example.com'. The principle is the same either way: point it at the endpoint and it connects.",
+  "brain_url": "http://localhost:8766",
+
+  "home_assistant_enabled": true,
+  "watchdog_enabled": true
+}

@@ -142,17 +142,53 @@ unknown name degrades safely to a default rather than crashing:
 1. **Emoji in the reply text** — an emotion emoji in the text wins.
 2. **A JSON `emote` tag** — `{"text": ..., "emote": ...}` names the emote.
 
+## Configuration
+
+Every component reads machine-specific settings from a single optional file,
+`buddy_config.json`, via the shared loader `buddy_config.py` (one copy sits in
+each component folder; it is standard-library-only and cross-platform). If no
+config file exists, every value falls back to a built-in default, so the code
+runs unchanged out of the box.
+
+The loader searches, in order: the `BUDDY_CONFIG` environment variable; a file
+next to the component; a file in the component's parent folder; then the
+OS-standard location (`%LOCALAPPDATA%\BuddyAI\` on Windows,
+`$XDG_CONFIG_HOME/buddyai/` on Linux). The first file found wins. (A
+component-local file is preferred over the OS-standard one specifically because
+a detached/service process can get a UAC-virtualized view of `%LOCALAPPDATA%`
+that differs from an elevated installer's — a config beside the component avoids
+that mismatch.)
+
+Keys (see `buddy_config.example.json`): the component directories
+(`companion_dir`, `brain_dir`, `watchdog_dir`), `comfyui_dir`, `ollama_models`,
+`shared_dir` (where the pet/brain contract files live), `ollama_url`,
+`brain_url` (where the companion reaches the brain), and the toggles
+`home_assistant_enabled` and `watchdog_enabled`.
+
+### Companion-only / remote machines
+
+The companion can run on a different machine from the brain. Because the
+companion reaches the brain through `brain_url`, a remote or companion-only
+install just sets that key to the brain's address instead of `localhost` — e.g.
+`http://<brain-host>:8766`, or a tunnel DNS name if you expose it beyond the LAN
+(the connection principle is identical; only the endpoint string changes). No
+code edits are needed. On such a machine only the companion (and its launcher)
+are installed; the brain, watchdog, ComfyUI, and Ollama live on the host
+machine.
+
 ## Runtime files (not in the repo)
 
 At run time the components read/write several files (logs, `inbox.txt`,
-`outbox.txt`, `llm_status.json`, and a credential file). These are generated
-locally and excluded via `.gitignore`; credentials are never committed.
+`outbox.txt`, `llm_status.json`). These are generated locally and excluded via
+`.gitignore`.
 
 ## Current limitations (to be addressed by the installer)
 
-- **Windows-first**, and several absolute paths are currently hardcoded (the
-  companion's folder, `G:\Buddy AI`, the ComfyUI Python, the Ollama models
-  dir). The planned installer will make these configurable.
+- **Windows-first.** Paths are no longer hardcoded — they come from
+  `buddy_config.json` (see Configuration) — but the launcher scripts are still
+  PowerShell/VBS, so a Linux run needs shell-script equivalents. The companion
+  also still resolves a Windows emoji font by a default path.
 - **Models and heavy dependencies are not included** — ComfyUI, Ollama, and the
   model weights are external (see `docs/MODELS.md`).
-- **No packaged release yet** — run from source.
+- **No packaged release yet** — run from source; the installer that writes
+  `buddy_config.json` and places dependencies is still to come.

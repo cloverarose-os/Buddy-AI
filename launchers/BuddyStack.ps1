@@ -15,19 +15,49 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
+# ---- config (mirrors buddy_config.py: same search order + defaults) -------
+# Reads buddy_config.json if present so an installer can point the launcher at
+# any install location. Falls back to the current hardcoded values, so with no
+# config file the behavior is identical to before.
+function Get-BuddyConfig {
+    $candidates = @()
+    if ($env:BUDDY_CONFIG) { $candidates += $env:BUDDY_CONFIG }
+    $here = Split-Path -Parent $PSCommandPath
+    $candidates += (Join-Path $here 'buddy_config.json')
+    $candidates += (Join-Path (Split-Path -Parent $here) 'buddy_config.json')
+    $candidates += (Join-Path $env:LOCALAPPDATA 'BuddyAI\buddy_config.json')
+    $cfg = @{}
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) {
+            try {
+                $json = Get-Content -LiteralPath $c -Raw | ConvertFrom-Json
+                foreach ($p in $json.PSObject.Properties) { $cfg[$p.Name] = $p.Value }
+                break
+            } catch { }
+        }
+    }
+    return $cfg
+}
+$CFG = Get-BuddyConfig
+function CfgOr($key, $fallback) {
+    if ($CFG.ContainsKey($key) -and $CFG[$key]) { return $CFG[$key] } else { return $fallback }
+}
+
 # ---- paths ----------------------------------------------------------
-# $env:LOCALAPPDATA resolves to C:\Users\<you>\AppData\Local automatically,
-# so these work on any machine without a username baked in. The G:\Buddy AI
-# paths reflect this dev machine's layout; the planned installer will make the
-# install root configurable (they're single-quoted because the path has a space).
-$SYS_PY   = "$env:LOCALAPPDATA\Programs\Python\Python311\pythonw.exe"
-$COMFY_PY = 'G:\Buddy AI\ComfyUI_windows_portable\python_embeded\pythonw.exe'
-$OLLAMA   = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe"
-$BRAIN    = 'G:\Buddy AI\Brain\buddy_ai.py'
-$BRAINDIR = 'G:\Buddy AI\Brain'
-$WATCHDOG = 'G:\Buddy AI\Watchdog\watchdog.py'
-$PET      = 'C:\ClaudeBuddy\buddy.py'
-$LOG      = 'G:\Buddy AI\Launchers\stack.log'
+# $env:LOCALAPPDATA resolves to C:\Users\<you>\AppData\Local automatically, so
+# the interpreter paths work on any machine without a username baked in. The
+# component/comfyui/install paths come from config (CfgOr), defaulting to this
+# dev machine's layout; an installer writes buddy_config.json to relocate them.
+$SYS_PY    = "$env:LOCALAPPDATA\Programs\Python\Python311\pythonw.exe"
+$OLLAMA    = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe"
+$COMFY_DIR = CfgOr 'comfyui_dir' 'G:\Buddy AI\ComfyUI_windows_portable'
+$COMFY_PY  = Join-Path $COMFY_DIR 'python_embeded\pythonw.exe'
+$BRAINDIR  = CfgOr 'brain_dir' 'G:\Buddy AI\Brain'
+$BRAIN     = Join-Path $BRAINDIR 'buddy_ai.py'
+$WATCHDOG  = Join-Path (CfgOr 'watchdog_dir' 'G:\Buddy AI\Watchdog') 'watchdog.py'
+$PET       = Join-Path (CfgOr 'companion_dir' 'C:\ClaudeBuddy') 'buddy.py'
+$WATCHDOG_ENABLED = [bool](CfgOr 'watchdog_enabled' $true)
+$LOG       = Join-Path $PSScriptRoot 'stack.log'
 
 function Log($msg) {
     $line = ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg)
@@ -157,7 +187,8 @@ switch ($Mode) {
         if (-not $okO) { Log '  ABORT: Ollama never came up.' }
         $okB = Start-Brain
         if (-not $okB) { Log '  WARNING: Brain never came up - HA + chat will fail.' }
-        Start-Watchdog | Out-Null
+        if ($WATCHDOG_ENABLED) { Start-Watchdog | Out-Null }
+        else { Log '  Watchdog disabled in config - skipping.' }
         Start-Pet | Out-Null
         Log ('SUMMARY  Ollama={0}  Brain={1}  Watchdog={2}  Pet={3}' -f
              (Test-Ollama), (Test-Brain), (Test-Watchdog), (Test-Pet))
@@ -191,7 +222,7 @@ if ($KeepAlive -and $Mode -eq 'Full') {
                 Log 'KEEP-ALIVE: *** PET DIED - restarting ***'
                 Start-Pet | Out-Null
             }
-            if (-not (Test-Watchdog)) {
+            if ($WATCHDOG_ENABLED -and -not (Test-Watchdog)) {
                 Log 'KEEP-ALIVE: *** WATCHDOG DIED - restarting ***'
                 Start-Watchdog | Out-Null
             }

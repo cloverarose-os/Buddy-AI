@@ -52,3 +52,8 @@ models/
 # --- Private dev runbooks (internal working notes, not for the repo) ---
 STACK-STATE.md
 STACK-STATE-*.md
+
+# --- Machine-specific config (the installer/user writes this per-machine) ---
+# The loader (buddy_config.py) and the example (buddy_config.example.json) ARE
+# committed; the real resolved config is not.
+buddy_config.json

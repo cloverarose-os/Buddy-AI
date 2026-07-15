@@ -9,13 +9,25 @@ import sys, os, json, time, threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-sys.path.insert(0, r"G:\Buddy AI\ComfyUI_windows_portable\ComfyUI")
+# Config loader lives beside this file; all machine-specific paths come from it
+# (with defaults equal to the previous hardcoded values, so behavior is
+# unchanged until an installer writes buddy_config.json).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import buddy_config as _cfg
 
-OLLAMA = "http://localhost:11434"
+_COMFY_DIR = _cfg.get("comfyui_dir")
+sys.path.insert(0, os.path.join(_COMFY_DIR, "ComfyUI"))
+
+OLLAMA = _cfg.get("ollama_url")
 CHAT_MODEL = "qwen3.5:9b"
 VISION_MODEL = "gemma3:12b"
 HTTP_PORT = 8766
-STATUSF = r"C:\ClaudeBuddy\llm_status.json"
+STATUSF = _cfg.path_in("shared_dir", "llm_status.json")
+
+# Home Assistant support is optional. When disabled, the brain does not serve
+# the Ollama-native facade routes (/api/*) that ONLY Home Assistant uses; the
+# companion's own routes (/status, /chat, /generate, /evict) are unaffected.
+HA_ENABLED = bool(_cfg.get("home_assistant_enabled"))
 
 # PLACEHOLDER persona - to be designed properly together. Functional for now.
 # PERSONA_CORE = identity/tone/image-rules shared by every surface.
@@ -25,8 +37,8 @@ STATUSF = r"C:\ClaudeBuddy\llm_status.json"
 # foreign caller's own OpenAI-style tool-calling (confirmed by testing:
 # with it present, the model stopped calling HA's own device tools).
 PERSONA_CORE = (
-    "You are Buddy, a local AI assistant running entirely on the user's "
-    "own PC. Be warm, concise, and genuinely helpful.\n\n"
+    "You are Buddy, Clover's local AI assistant, running entirely on her "
+    "own RTX 4070 gaming PC. Be warm, concise, and genuinely helpful.\n\n"
     "IMAGE GENERATION RULE - READ CAREFULLY: only call the generate_image "
     "function when the user EXPLICITLY and SPECIFICALLY asks you to "
     "create, make, draw, or generate a picture/image/art RIGHT NOW in "
@@ -245,7 +257,7 @@ def generate_image_native(prompt, filename_prefix="buddyai"):
 
     result = saver.save_images(images, filename_prefix=filename_prefix)
     info = result["ui"]["images"][0]
-    out_dir = r"G:\Buddy AI\ComfyUI_windows_portable\ComfyUI\output"
+    out_dir = os.path.join(_COMFY_DIR, "ComfyUI", "output")
     sub = info.get("subfolder", "")
     return os.path.join(out_dir, sub, info["filename"]) if sub else \
         os.path.join(out_dir, info["filename"])
@@ -710,8 +722,9 @@ class BuddyAIHandler(BaseHTTPRequestHandler):
 
     def _reqlog(self, msg):
         try:
-            with open(r"G:\Buddy AI\Brain\requests.log", "a",
-                     encoding="utf-8") as f:
+            _logpath = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "requests.log")
+            with open(_logpath, "a", encoding="utf-8") as f:
                 f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
         except OSError:
             pass
@@ -743,6 +756,9 @@ class BuddyAIHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"0\r\n\r\n")
 
     def do_GET(self):
+        if self.path.startswith("/api/") and not HA_ENABLED:
+            self._send(404, {"error": "home assistant support disabled"})
+            return
         if self.path == "/status":
             self._send(200, {"alive": True, "image_model_loaded":
                              _img["loaded"], "gaming": is_gaming()})
@@ -785,6 +801,9 @@ class BuddyAIHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if self.path.startswith("/api/") and not HA_ENABLED:
+            self._send(404, {"error": "home assistant support disabled"})
+            return
         if self.path == "/chat":
             try:
                 n = int(self.headers.get("Content-Length", 0))

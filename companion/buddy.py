@@ -16,6 +16,13 @@ from PIL import Image, ImageTk, ImageDraw, ImageFilter, ImageChops
 from skin_highres import HighResSkin, HX, HY, CX, CY, \
     PAW_TOP, PAW_BOT, SUIT_EDGE as SKIN_EDGE
 
+# Config loader lives beside this file; machine-specific paths come from it,
+# with defaults equal to the previous hardcoded values (so behavior is
+# unchanged until an installer writes buddy_config.json).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import buddy_config as _cfg
+
 
 def _shift(img, dx, dy):
     """Translate an RGBA layer by (dx, dy) on a transparent canvas of the
@@ -24,12 +31,12 @@ def _shift(img, dx, dy):
     out.paste(img, (int(dx), int(dy)))
     return out
 
-BASE = r"C:\ClaudeBuddy"
+BASE = _cfg.get("shared_dir")
 INBOX = os.path.join(BASE, "inbox.txt")
 OUTBOX = os.path.join(BASE, "outbox.txt")
 LOG = os.path.join(BASE, "log.txt")
 STATUSF = os.path.join(BASE, "llm_status.json")
-BUDDY_AI_URL = "http://localhost:8766"
+BUDDY_AI_URL = _cfg.get("brain_url")
 HTTP_PORT = 8765
 BUDDY = None
 TRANS = "#ff00fe"
@@ -3764,7 +3771,7 @@ class BuddyHTTP(BaseHTTPRequestHandler):
                 self._send(400, {"error": "invalid filename"})
                 return
             fpath = os.path.join(
-                r"G:\Buddy AI\ComfyUI_windows_portable\ComfyUI\output", fname)
+                _cfg.get("comfyui_dir"), "ComfyUI", "output", fname)
             if not os.path.isfile(fpath):
                 self._send(404, {"error": "not found"})
                 return

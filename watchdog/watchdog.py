@@ -6,10 +6,16 @@
 import os, sys, time, json, ctypes, subprocess
 import urllib.request
 
+# Config loader lives beside this file; the shared dir (where the pet/brain
+# contract files live) comes from it, defaulting to the previous hardcoded
+# value so behavior is unchanged until an installer writes buddy_config.json.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import buddy_config as _cfg
+
 # Watchdog's own home (config + log live beside the script)
 BASE = os.path.dirname(os.path.abspath(__file__))
 # Pet's home - shared contract files the pet and brain read/write
-PET_BASE = r"C:\ClaudeBuddy"
+PET_BASE = _cfg.get("shared_dir")
 CFG_PATH = os.path.join(BASE, "watchdog_config.json")
 STATUS = os.path.join(PET_BASE, "llm_status.json")
 LOGF = os.path.join(BASE, "watchdog.log")
