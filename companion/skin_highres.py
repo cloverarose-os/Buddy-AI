@@ -2070,10 +2070,49 @@ class HighResSkin:
                       outline=SUIT_EDGE + (255,), width=int(_x(0.8)))
         return _down(img)
 
+    def _reach_arm(self, img, deg, thumb=None):
+        """Render the right arm rotated to `deg` degrees around the shoulder
+        pivot (same mechanism/pivot as the wave), optionally with a small
+        image `thumb` baked onto the paw so it rotates WITH the paw. Used by
+        the attach/webcam reach->receive->pocket choreography. `deg` follows
+        the same convention as the wave block: 0 = arm straight up, and the
+        wave rest maps through -(degrees+90). Here we pass `deg` directly as
+        the rotation applied to the up-pointing patch (0 -> up).
+        Composites onto `img` in place."""
+        ax, ay = self._wave_pivot
+        axS, ayS = ax * S, ay * S
+        src = self._wave_patch
+        # The wave patch canvas only has room ABOVE the pivot (it was sculpted
+        # for an UP-pointing wave: ~118px above the shoulder, ~12px below). Our
+        # reach rotates the arm DOWNWARD, which would run off the bottom of
+        # that canvas and clip to a rectangle (the arm visibly vanishes into a
+        # box mid-sweep). Fix: pad the patch onto a larger canvas CENTERED on
+        # the pivot so the arm has room in every direction, then rotate that.
+        bbox = src.getbbox() or (0, 0, src.width, src.height)
+        R = max(int(((cx - axS) ** 2 + (cy - ayS) ** 2) ** 0.5)
+                for cx in (bbox[0], bbox[2]) for cy in (bbox[1], bbox[3]))
+        R += 8 * S                                   # small safety margin
+        big = Image.new("RGBA", (2 * R, 2 * R), (0, 0, 0, 0))
+        ox, oy = R - axS, R - ayS                    # pivot -> canvas center
+        big.paste(src, (ox, oy))
+        if thumb is not None:
+            # bake the thumb onto the paw (held items nestle at ~(ax, ay-54)
+            # patch-local 1x) so it rotates WITH the paw through the motion.
+            t = thumb.convert("RGBA")
+            tw, th = t.size
+            px, py = ox + axS, oy + (ay - 54) * S
+            big.alpha_composite(t, (int(px - tw / 2), int(py - th / 2)))
+        rot = big.rotate(deg, center=(R, R), resample=Image.BICUBIC)
+        rot = rot.resize((rot.width // S, rot.height // S), Image.LANCZOS)
+        piv = rot.width // 2                          # pivot = canvas center
+        tmp = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        tmp.paste(rot, (CX + 40 - piv, CY + 2 - piv))
+        img.alpha_composite(tmp)
+
     def frame(self, emote, blinking, wave_angle, pha, phb, turn=0.0,
               wipe=None, yawn=None, nausea=None, pant=None, spin=None,
               push=None, sad=None, surprise=None, plead=None, scare=None,
-              droop=None, scheme=None):
+              droop=None, scheme=None, reach=None):
         if emote == "mischievous" and scheme is not None:
             # *** HE RUBS HIS PAWS TOGETHER. *** The scheming gesture.
             # base_adoring is the NO-LEFT-ARM base, because mischief_paws draws
@@ -2342,7 +2381,12 @@ class HighResSkin:
             img.alpha_composite(self.hug_arms)
             return img
         img = self.base.copy()
-        if emote == "wave" and wave_angle is not None:
+        if reach is not None:
+            # attach/webcam choreography: right arm rotated to reach["deg"],
+            # optional thumbnail/icon on the paw via reach["thumb"]. Replaces
+            # the normal right arm for the duration of the gesture.
+            self._reach_arm(img, reach.get("deg", 0.0), reach.get("thumb"))
+        elif emote == "wave" and wave_angle is not None:
             deg = -(math.degrees(wave_angle) + 90)
             ax, ay = self._wave_pivot
             patch = self._wave_patch.rotate(

@@ -8,13 +8,23 @@
 # HA/local stack (/say, /status, /generate_image - unchanged, NAS depends on it)
 import tkinter as tk
 import tkinter.font as tkfont
-import os, time, random, math, json, re
+from tkinter import filedialog
+import os, time, random, math, json, re, base64
 import threading, urllib.request
 import queue as _queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from PIL import Image, ImageTk, ImageDraw, ImageFilter, ImageChops
-from skin_highres import HighResSkin, HX, HY, CX, CY, \
+from skin_highres import HighResSkin, HX, HY, CX, CY, S, \
     PAW_TOP, PAW_BOT, SUIT_EDGE as SKIN_EDGE
+
+# System-tray support (Hide Buddy -> tray, double-click to recall). Guarded
+# so the pet still runs if pystray is ever unavailable.
+try:
+    import pystray
+    from pystray import MenuItem as _TrayItem, Menu as _TrayMenu
+    _HAVE_TRAY = True
+except Exception:
+    _HAVE_TRAY = False
 
 # Config loader lives beside this file; machine-specific paths come from it,
 # with defaults equal to the previous hardcoded values (so behavior is
@@ -284,6 +294,24 @@ class Buddy:
         self._bubble_msg = ""
         self.chat_win = None
         self.chat_history = []
+        self.pending_image = None   # path of an image attached for the next send
+        self._cam = None            # OpenCV VideoCapture while webcam preview open
+        self._cam_win = None        # webcam preview Toplevel
+        self._tray_icon = None      # pystray Icon while hidden in the tray
+        # --- attach/webcam "reach out & pocket" gesture -----------------
+        # None when idle, else {'sub': 'extend'|'hold'|'present'|'pocket'|
+        #                       'return', 't0': <phase when sub began>,
+        #                       'thumb': <img>}
+        self._reach = None
+        # Tunable choreography. Clock: phase advances 0.12/tick @ 40ms, so
+        # ~3.0 phase units = 1 second. Durations are in phase units.
+        self._reach_extend_dur = 1.05   # idle -> extended empty hand (~0.35s)
+        self._reach_present_dur = 1.60  # HOLD it out, thumb in hand (~0.53s)
+        self._reach_pocket_dur = 1.50   # extended -> carry in & pocket (~0.5s)
+        self._reach_return_dur = 1.05   # cancel: extended -> rest (~0.35s)
+        self._reach_rest_deg = 195.0    # handoff angle (arm down; crossfades
+        #                                 into the normal resting right_arm)
+        self._reach_out_deg = 275.0     # extended empty (=-85deg, arm out)
         self.results = _queue.Queue()
         global BUDDY
         BUDDY = self
@@ -312,8 +340,123 @@ class Buddy:
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="Chat with Buddy", command=self.toggle_chat)
         m.add_command(label="Dismiss message", command=self.clear_msg)
-        m.add_command(label="Exit buddy", command=self.root.destroy)
+        m.add_separator()
+        m.add_command(label="Hide Buddy (to tray)", command=self.hide_to_tray)
+        m.add_command(label="Exit buddy", command=self.quit_app)
         m.tk_popup(e.x_root, e.y_root)
+
+    # ----- System tray: hide Buddy out of the way, recall by double-click ----
+    def _make_tray_image(self):
+        """Draw a small on-brand tray icon: coral face w/ antennae + eyes."""
+        sz = 64
+        img = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        coral = (239, 132, 103, 255)   # BODY
+        edge = (210, 102, 75, 255)     # BODY_EDGE
+        ink = (46, 33, 27, 255)        # INK
+        # antennae
+        d.line((24, 14, 20, 5), fill=edge, width=3)
+        d.line((40, 14, 44, 5), fill=edge, width=3)
+        d.ellipse((17, 2, 23, 8), fill=coral, outline=edge)
+        d.ellipse((41, 2, 47, 8), fill=coral, outline=edge)
+        # head
+        d.ellipse((10, 12, 54, 56), fill=coral, outline=edge, width=2)
+        # eyes
+        d.ellipse((22, 30, 30, 40), fill=ink)
+        d.ellipse((34, 30, 42, 40), fill=ink)
+        # little smile
+        d.arc((24, 38, 40, 50), start=20, end=160, fill=ink, width=2)
+        return img
+
+    def hide_to_tray(self):
+        """Tuck Buddy (and any of his windows) away, leaving only a tray
+        icon. Double-clicking the tray icon brings him back."""
+        if not _HAVE_TRAY:
+            # fallback: just withdraw; without a tray there'd be no way back,
+            # so instead tell the user rather than trap them.
+            self.results.put({"text": "Tray support isn't installed, so I "
+                              "can't hide to the tray safely.",
+                              "emote": "worried"})
+            return
+        # close any of his side windows so nothing floats while he's hidden
+        try:
+            if self.chat_win and self.chat_win.winfo_exists():
+                self.chat_win.destroy()
+                self.chat_win = None
+        except tk.TclError:
+            pass
+        try:
+            self._webcam_close()
+        except Exception:
+            pass
+        try:
+            if self.bubble_win and self.bubble_win.winfo_exists():
+                self.bubble_win.withdraw()
+        except (tk.TclError, AttributeError):
+            pass
+        self.root.withdraw()
+        # if an icon somehow already exists, stop it first
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+            self._tray_icon = None
+        menu = _TrayMenu(
+            _TrayItem("Show Buddy", self._tray_show, default=True),
+            _TrayItem("Exit Buddy", self._tray_exit))
+        self._tray_icon = pystray.Icon(
+            "buddy", self._make_tray_image(),
+            "Buddy - double-click to show", menu)
+        threading.Thread(target=self._tray_icon.run, daemon=True).start()
+
+    def _tray_show(self, icon=None, item=None):
+        """Tray callback (runs on the tray thread): bring Buddy back. Marshal
+        the actual Tk calls onto the main thread via after()."""
+        self.root.after(0, self._restore_from_tray)
+
+    def _restore_from_tray(self):
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        try:
+            if self.bubble_win and self.bubble_win.winfo_exists() and self.msg:
+                self.bubble_win.deiconify()
+        except (tk.TclError, AttributeError):
+            pass
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+            self._tray_icon = None
+
+    def _tray_exit(self, icon=None, item=None):
+        """Tray 'Exit' callback: stop the icon, then quit on the main thread."""
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+            self._tray_icon = None
+        self.root.after(0, self.root.destroy)
+
+    def quit_app(self):
+        """Clean shutdown from the context menu: drop the tray icon if any."""
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+            self._tray_icon = None
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+
 
     def toggle_chat(self, e=None):
         try:
@@ -332,7 +475,7 @@ class Buddy:
             w.attributes("-transparentcolor", TRANS)
         except tk.TclError:
             pass
-        cw, ch = 252, 96
+        cw, ch = 252, 126
         w.configure(bg=TRANS)
         cvc = tk.Canvas(w, width=cw, height=ch, bg=TRANS,
                         highlightthickness=0)
@@ -348,6 +491,7 @@ class Buddy:
                            outline=BODY, width=2)
         cvc.create_text(20, 22, text="Talk to Buddy", anchor="w",
                         font=("Segoe UI", 9, "italic"), fill=BODY_EDGE)
+        # Row 1: text entry + Send (original working layout, restored width)
         self.entry = tk.Entry(w, font=("Segoe UI", 11), bd=0,
                               bg="#FFFFFF", fg=INK, insertbackground=BODY,
                               relief="flat", highlightthickness=1,
@@ -360,6 +504,19 @@ class Buddy:
                          activeforeground="#FFFFFF", relief="flat",
                          cursor="hand2")
         send.place(x=px1 - 50, y=40, width=44, height=30)
+        # Row 2 (left side only, right side reserved): compact icon buttons
+        self.attach_btn = tk.Button(w, text="\U0001F4CE",
+                         command=self.pick_image,
+                         font=("Segoe UI Emoji", 12), bd=0,
+                         bg="#FBEDE6", fg=BODY, activebackground="#F0DCD0",
+                         relief="flat", cursor="hand2")
+        self.attach_btn.place(x=14, y=78, width=32, height=28)
+        self.webcam_btn = tk.Button(w, text="\U0001F4F7",
+                         command=self.open_webcam,
+                         font=("Segoe UI Emoji", 12), bd=0,
+                         bg="#FBEDE6", fg=BODY, activebackground="#F0DCD0",
+                         relief="flat", cursor="hand2")
+        self.webcam_btn.place(x=50, y=78, width=32, height=28)
         self.entry.bind("<Return>", lambda ev: self.send_chat())
         self.entry.bind("<Escape>", lambda ev: self.toggle_chat())
         self.chat_win = w
@@ -375,7 +532,7 @@ class Buddy:
                 return
         except tk.TclError:
             return
-        cw, ch = 252, 96
+        cw, ch = 252, 126
         x = self.root.winfo_x() + (HX - 46) - cw + 4
         y = self.root.winfo_y() + HY - 56
         self.chat_win.geometry(f"{cw}x{ch}+{max(0, x)}+{max(0, y)}")
@@ -654,14 +811,438 @@ class Buddy:
                x1, y1 + r, x1, y1]
         return cv.create_polygon(pts, smooth=True, **kw)
 
+    def pick_image(self):
+        """Reach the empty hand out, THEN (once he's visibly extended) open
+        the file dialog. On selection he carries it in and pockets it; on
+        cancel the empty hand returns to idle. If this button is already
+        showing the green check, the click CLEARS the attachment instead."""
+        if self._is_checked(self.attach_btn):
+            self._clear_pending_image()
+            return
+        if self.pending_image:          # replacing an attachment from webcam
+            self._clear_pending_image()
+        self._reach_begin(after=self._pick_image_dialog)
+
+    def _pick_image_dialog(self):
+        title = "Attach an image for Buddy to see"
+        # The native Windows dialog remembers its own last position and ignores
+        # parent-centering, so we let it open normally, then physically move it
+        # UP above Buddy via the Win32 API on a side thread (the main thread is
+        # blocked by the modal dialog while it's open).
+        try:
+            bx, by, bw = self.root.winfo_x(), self.root.winfo_y(), self.w
+            threading.Thread(target=self._move_dialog_above_buddy,
+                             args=(title, bx, by, bw), daemon=True).start()
+        except Exception:
+            pass
+        path = filedialog.askopenfilename(
+            title=title,
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.webp *.bmp"),
+                       ("All files", "*.*")])
+        if not path:
+            self._reach_cancel()
+            return
+        self.pending_image = path
+        # reflect attached state: green check icon
+        try:
+            self.attach_btn.config(text="\u2705", fg="#2E7D32")
+            self.entry.focus_force()
+        except tk.TclError:
+            pass
+        # carry the thumbnail in and pocket it (same beat as the green check)
+        self._reach_receive(self._make_paw_thumb(path, kind="image"))
+
+    def _move_dialog_above_buddy(self, title, bx, by, bw):
+        """Runs on a SIDE thread (the main thread is blocked by the modal
+        dialog). Polls for the dialog window by its caption, then moves it so
+        it sits fully ABOVE Buddy - centered on him with a small gap - clearing
+        him entirely. Position only; z-order and size untouched."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except Exception:
+            return
+        GAP = 24                       # tunable: gap above Buddy's top edge
+        try:
+            u = ctypes.windll.user32
+            u.FindWindowW.restype = wintypes.HWND
+            u.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            u.GetWindowRect.argtypes = [wintypes.HWND,
+                                        ctypes.POINTER(wintypes.RECT)]
+            u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_uint]
+            SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
+            rect = wintypes.RECT()
+            for i in range(60):        # ~3s
+                hwnd = u.FindWindowW(None, title)
+                if hwnd:
+                    u.GetWindowRect(hwnd, ctypes.byref(rect))
+                    dw = rect.right - rect.left
+                    dh = rect.bottom - rect.top
+                    # keep its current horizontal spot (avoids shoving it off
+                    # the screen edge); only lift it UP so it clears Buddy.
+                    tx = rect.left
+                    ty = max(8, int(by - GAP - dh))           # fully above him
+                    u.SetWindowPos(hwnd, 0, tx, ty, 0, 0,
+                                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+                    # nudge once more in case it self-positions right after show
+                    time.sleep(0.08)
+                    u.SetWindowPos(hwnd, 0, tx, ty, 0, 0,
+                                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+                    return
+                time.sleep(0.05)
+        except Exception:
+            return
+
+    def _clear_pending_image(self):
+        self.pending_image = None
+        try:
+            if getattr(self, "attach_btn", None) and self.attach_btn.winfo_exists():
+                self.attach_btn.config(text="\U0001F4CE", fg=BODY)
+        except (tk.TclError, AttributeError):
+            pass
+        try:
+            if getattr(self, "webcam_btn", None) and self.webcam_btn.winfo_exists():
+                self.webcam_btn.config(text="\U0001F4F7", fg=BODY)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _is_checked(self, btn):
+        """True if this attach/webcam button is currently showing the green
+        'attached' check (so a click on it means 'clear the attachment')."""
+        try:
+            return bool(btn) and btn.winfo_exists() and \
+                btn.cget("text") == "\u2705"
+        except (tk.TclError, AttributeError):
+            return False
+
+    # ---- attach/webcam "reach out & pocket" gesture ----------------------
+    # Reuses the real rotatable arm in skin_highres (frame(reach=...)). The
+    # arm sculpt differs from the resting right_arm, so the two ends of the
+    # gesture crossfade into idle rather than hard-swapping (avoids a pop).
+    def _reach_begin(self, after=None, after_delay_ms=430):
+        """idle -> extended empty hand. If `after` is given, run it once he's
+        extended (opens the dialog/webcam only AFTER the reach has visibly
+        completed, so a modal dialog can't freeze the loop mid-reach)."""
+        if self._reach is not None and self._reach.get("sub") in (
+                "extend", "hold", "present", "pocket", "return"):
+            if after:
+                self.root.after(after_delay_ms, after)
+            return
+        self._reach = {"sub": "extend", "t0": self.phase, "thumb": None}
+        if after:
+            self.root.after(after_delay_ms, after)
+
+    def _reach_receive(self, thumb):
+        """Accepted a file/frame: HOLD it out in hand for a beat so you can see
+        it (the 'present' sub), then carry it in and pocket it, then settle."""
+        self._reach = {"sub": "present", "t0": self.phase, "thumb": thumb}
+
+    def _reach_cancel(self):
+        """Dismissed with nothing taken: empty hand back to idle."""
+        if self._reach is not None:
+            self._reach = {"sub": "return", "t0": self.phase, "thumb": None}
+
+    def _reach_tick(self):
+        """Advance auto-transitions (called each tick)."""
+        r = self._reach
+        if not r:
+            return
+        e = self.phase - r["t0"]
+        sub = r["sub"]
+        if sub == "extend" and e >= self._reach_extend_dur:
+            r["sub"] = "hold"
+            r["t0"] = self.phase
+        elif sub == "present" and e >= self._reach_present_dur:
+            r["sub"] = "pocket"
+            r["t0"] = self.phase
+        elif sub == "pocket" and e >= self._reach_pocket_dur:
+            self._reach = None
+        elif sub == "return" and e >= self._reach_return_dur:
+            self._reach = None
+        # 'hold' persists until _reach_receive / _reach_cancel
+
+    def _reach_render(self):
+        """-> (deg, thumb_or_None, blend_to_idle) for the current frame."""
+        r = self._reach
+        e = self.phase - r["t0"]
+        sub = r["sub"]
+        out, rest = self._reach_out_deg, self._reach_rest_deg
+
+        def ease(u):
+            u = 0.0 if u < 0 else (1.0 if u > 1 else u)
+            return u * u * (3 - 2 * u)
+
+        if sub == "extend":
+            u = e / self._reach_extend_dur
+            return (rest + (out - rest) * ease(u), None,
+                    max(0.0, 1.0 - u / 0.35))
+        if sub == "hold":
+            return out, None, 0.0
+        if sub == "present":
+            # hold extended with the thumb clearly in hand - the "look" beat
+            return out, r["thumb"], 0.0
+        if sub == "pocket":
+            u = e / self._reach_pocket_dur
+            deg = out + (rest - out) * ease(u)
+            ta = 1.0 - (u - 0.15) / 0.40      # thumb fades over u:0.15->0.55
+            ta = 0.0 if ta < 0 else (1.0 if ta > 1 else ta)
+            thumb = (self._fade_thumb(r["thumb"], ta)
+                     if (r["thumb"] is not None and ta > 0) else None)
+            return deg, thumb, max(0.0, (u - 0.65) / 0.35)
+        # 'return'
+        u = e / self._reach_return_dur
+        return (out + (rest - out) * ease(u), None,
+                max(0.0, (u - 0.65) / 0.35))
+
+    def _fade_thumb(self, img, alpha):
+        if img is None or alpha >= 1.0:
+            return img
+        a = img.getchannel("A").point(lambda p: int(p * alpha))
+        out = img.copy()
+        out.putalpha(a)
+        return out
+
+    def _make_paw_thumb(self, path, kind="image"):
+        """The little card on his paw: a real thumbnail if we can, else a type
+        icon. Sized in the skin's supersample space (S) for a crisp downscale."""
+        try:
+            src = Image.open(path).convert("RGBA")
+            return self._paw_card(inner=src)
+        except Exception:
+            return self._paw_card(inner=None, kind=kind)
+
+    def _paw_card(self, inner=None, kind="image"):
+        """White 'photo card' with a thin coral edge; fits an image inside, or
+        draws a `kind` symbol when there's nothing to thumbnail."""
+        side = 30 * S
+        pad = 3 * S
+        card = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        d = ImageDraw.Draw(card)
+        d.rectangle([0, 0, side - 1, side - 1], fill=(255, 255, 255, 255),
+                    outline=SKIN_EDGE + (255,), width=max(1, S))
+        if inner is not None:
+            t = inner.copy()
+            t.thumbnail((side - 2 * pad, side - 2 * pad), Image.LANCZOS)
+            card.alpha_composite(t, ((side - t.width) // 2,
+                                     (side - t.height) // 2))
+        else:
+            self._draw_kind_symbol(d, kind, side, pad)
+        return card
+
+    def _draw_kind_symbol(self, d, kind, side, pad):
+        ink = (90, 70, 60, 255)
+        cx = side / 2
+        if kind == "camera":
+            d.rectangle([pad, side * 0.36, side - pad, side - pad],
+                        fill=(120, 150, 175, 255))
+            d.rectangle([side * 0.38, side * 0.24, side * 0.60, side * 0.38],
+                        fill=(120, 150, 175, 255))
+            d.ellipse([cx - 6 * S, side * 0.46, cx + 6 * S, side * 0.46 + 12 * S],
+                      fill=(240, 245, 250, 255), outline=ink, width=max(1, S))
+        elif kind in ("text", "doc", "pdf"):
+            for i in range(4):
+                yy = pad + (i + 1) * (side - 2 * pad) / 5
+                d.line([pad + 2 * S, yy, side - pad - 2 * S, yy],
+                       fill=ink, width=max(1, S))
+        else:  # generic picture: sky + sun + hill
+            d.rectangle([pad, pad, side - pad, side - pad],
+                        fill=(150, 200, 240, 255))
+            d.ellipse([side - pad - 9 * S, pad + 2 * S,
+                       side - pad - 2 * S, pad + 9 * S], fill=(250, 220, 90, 255))
+            d.polygon([(pad, side - pad), (side * 0.5, side * 0.5),
+                       (side - pad, side - pad)], fill=(110, 170, 110, 255))
+
+    # ---- Webcam capture (live preview -> snap one frame -> vision pipeline) --
+    def open_webcam(self):
+        """Reach the empty hand out, THEN (once extended) open the live camera
+        preview. Capture -> carry in & pocket; Cancel/close -> hand back. If
+        this button is already showing the green check, the click CLEARS the
+        attachment instead."""
+        if self._is_checked(self.webcam_btn):
+            self._clear_pending_image()
+            return
+        if self.pending_image:          # replacing an attachment from the file
+            self._clear_pending_image()
+        self._reach_begin(after=self._open_webcam_window)
+
+    def _open_webcam_window(self):
+        """Open a live camera preview in a small coral-framed window. A
+        Capture button grabs the current frame and routes it through the
+        SAME pending_image path as the file picker (which feeds the brain's
+        proven vision pipeline). Cancel/close releases the camera."""
+        # guard: don't open twice
+        if getattr(self, "_cam_win", None):
+            try:
+                if self._cam_win.winfo_exists():
+                    self._cam_win.lift()
+                    return
+            except tk.TclError:
+                pass
+        try:
+            import cv2
+        except ImportError:
+            self.results.put({"text": "My webcam support isn't installed "
+                              "(need opencv).", "emote": "worried"})
+            self._reach_cancel()
+            return
+        # Cameras aren't always on index 0 (yours is on 1). Probe a few
+        # index/backend combos and keep the first that BOTH opens AND yields
+        # a real frame - opening alone isn't enough to prove it works.
+        cap = None
+        for idx in (0, 1, 2, 3):
+            for be in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+                try:
+                    c = cv2.VideoCapture(idx, be)
+                    if c and c.isOpened():
+                        ok, _f = c.read()
+                        if ok and _f is not None:
+                            cap = c
+                            break
+                    c.release()
+                except Exception:
+                    try:
+                        c.release()
+                    except Exception:
+                        pass
+            if cap:
+                break
+        if not cap:
+            self.results.put({"text": "I couldn't open a webcam - is one "
+                              "connected and free?", "emote": "worried"})
+            self._reach_cancel()
+            return
+        self._cam = cap
+        self._cam_cv2 = cv2
+        w = tk.Toplevel(self.root)
+        w.title("Buddy's webcam")
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg=BODY)
+        self._cam_win = w
+        # preview label (image) + buttons underneath
+        self._cam_label = tk.Label(w, bg=BODY, bd=0)
+        self._cam_label.pack(padx=6, pady=(6, 4))
+        bar = tk.Frame(w, bg=BODY)
+        bar.pack(pady=(0, 6))
+        tk.Button(bar, text="\U0001F4F8  Capture", command=self._webcam_capture,
+                  font=("Segoe UI Emoji", 10, "bold"), bd=0, bg="#FFFFFF",
+                  fg=BODY, activebackground="#F0DCD0", relief="flat",
+                  cursor="hand2").pack(side="left", padx=4)
+        tk.Button(bar, text="Cancel", command=self._webcam_close,
+                  font=("Segoe UI", 10), bd=0, bg=BODY_EDGE, fg="#FFFFFF",
+                  activebackground=BODY, activeforeground="#FFFFFF",
+                  relief="flat", cursor="hand2").pack(side="left", padx=4)
+        # Sit just to the LEFT of the "talk to Buddy" box (still its own
+        # independent window). The box's left edge uses the same formula as
+        # _place_chat: root_x + (HX-46) - cw + 4, cw=252. We right-align the
+        # preview against that edge with a small gap. The preview is capped at
+        # 320px wide (+12 padding = 332), so reserving 332 to the left of the
+        # box guarantees no overlap even after the first frame paints and the
+        # window auto-grows from its top-left corner.
+        try:
+            cam_w = 332
+            gap = 8
+            chat_left = self.root.winfo_x() + (HX - 46) - 252 + 4
+            x = chat_left - gap - cam_w
+            y = self.root.winfo_y() + HY - 56   # top-aligned with the box
+            w.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except tk.TclError:
+            pass
+        w.protocol("WM_DELETE_WINDOW", self._webcam_close)
+        self._cam_photo = None
+        self._webcam_tick()
+
+    def _webcam_tick(self):
+        """Poll a frame ~20fps and paint it into the preview label."""
+        if not getattr(self, "_cam_win", None):
+            return
+        try:
+            if not self._cam_win.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        try:
+            ok, frame = self._cam.read()
+            if ok:
+                cv2 = self._cam_cv2
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # mirror horizontally so it feels like a mirror
+                frame = frame[:, ::-1, :]
+                img = Image.fromarray(frame)
+                img.thumbnail((320, 240))
+                self._cam_photo = ImageTk.PhotoImage(img)
+                self._cam_label.config(image=self._cam_photo)
+        except Exception:
+            pass
+        self._cam_win.after(50, self._webcam_tick)
+
+    def _webcam_capture(self):
+        """Grab the current frame, save to a temp file, and load it into the
+        same pending_image slot the file picker uses."""
+        try:
+            ok, frame = self._cam.read()
+            if not ok:
+                self._webcam_close()
+                return
+            cv2 = self._cam_cv2
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb = rgb[:, ::-1, :]  # match the mirrored preview
+            img = Image.fromarray(rgb)
+            tmp = os.path.join(os.environ.get("TEMP", "."),
+                               f"buddy_webcam_{int(time.time())}.png")
+            img.save(tmp)
+            self.pending_image = tmp
+            try:
+                if self.webcam_btn and self.webcam_btn.winfo_exists():
+                    self.webcam_btn.config(text="\u2705", fg="#2E7D32")
+            except (tk.TclError, AttributeError):
+                pass
+            # carry the snapshot in and pocket it (before _webcam_close runs)
+            self._reach_receive(self._make_paw_thumb(tmp, kind="camera"))
+        except Exception as e:
+            self.results.put({"text": f"Webcam snap failed ({type(e).__name__}).",
+                              "emote": "worried"})
+        finally:
+            self._webcam_close()
+
+    def _webcam_close(self):
+        """Release the camera and tear down the preview window."""
+        # Closing WITHOUT a capture (Cancel / window close / failed read):
+        # bring the reaching empty hand back to idle. Capture sets 'pocket'
+        # first, so this only fires on a genuine cancel.
+        if self._reach is not None and self._reach.get("sub") == "hold":
+            self._reach_cancel()
+        try:
+            if getattr(self, "_cam", None):
+                self._cam.release()
+        except Exception:
+            pass
+        self._cam = None
+        try:
+            if getattr(self, "_cam_win", None) and self._cam_win.winfo_exists():
+                self._cam_win.destroy()
+        except tk.TclError:
+            pass
+        self._cam_win = None
+        self._cam_photo = None
+
     def send_chat(self):
         txt = self.entry.get().strip()
-        if not txt:
+        # grab any attached image and clear the picker for the next turn
+        img_path = self.pending_image
+        if not txt and not img_path:
             return
+        # if an image is attached but no text, imply a natural question
+        if not txt and img_path:
+            txt = "What do you see in this image?"
         self.entry.delete(0, tk.END)
+        self._clear_pending_image()
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(LOG, "a", encoding="utf-8") as lg:
-            lg.write(f"[{stamp}] USER: {txt}\n")
+            note = " [+image]" if img_path else ""
+            lg.write(f"[{stamp}] USER: {txt}{note}\n")
         if is_gaming():
             self.results.put({"text": "Brain is unloaded so your game "
                               "gets all the VRAM - ask me after the "
@@ -688,18 +1269,29 @@ class Buddy:
         # animation give up and look "failed" right before the real
         # result arrives. 185s gives a small buffer beyond that timeout.
         self.msg_until = time.time() + 185
-        threading.Thread(target=self.brain_worker, args=(txt,),
+        threading.Thread(target=self.brain_worker, args=(txt, img_path),
                          daemon=True).start()
 
-    def brain_worker(self, txt):
-        """Pure thin client. Send text (+ running history) to Buddy AI -
-        the ONE brain - and display exactly whatever comes back. No
-        persona, no tool logic, no image-gen code lives here at all
+    def brain_worker(self, txt, img_path=None):
+        """Pure thin client. Send text (+ running history, + optional image)
+        to Buddy AI - the ONE brain - and display exactly whatever comes
+        back. No persona, no tool logic, no image-gen code lives here at all
         anymore; Buddy AI owns everything, so this always matches
         whatever capabilities the brain has, even as they grow."""
         try:
-            body = json.dumps({"text": txt,
-                               "history": self.chat_history}).encode()
+            payload = {"text": txt, "history": self.chat_history}
+            # attach an image for Buddy to see, if one was picked
+            if img_path:
+                try:
+                    with open(img_path, "rb") as imf:
+                        payload["image_b64"] = base64.b64encode(
+                            imf.read()).decode()
+                except OSError as e:
+                    self.results.put({
+                        "text": f"I couldn't open that image ({type(e).__name__}).",
+                        "emote": "worried"})
+                    return
+            body = json.dumps(payload).encode()
             req = urllib.request.Request(
                 BUDDY_AI_URL + "/chat", data=body,
                 headers={"Content-Type": "application/json"})
@@ -950,6 +1542,7 @@ class Buddy:
 
     def tick(self):
         self.phase += 0.12
+        self._reach_tick()   # advance attach/webcam reach gesture, if active
         spd = 3.0 if self.emote in ('excited', 'celebrate') else 1.0
         self.ant_a += 0.037 * spd
         self.ant_b += 0.055 * spd
@@ -1093,6 +1686,14 @@ class Buddy:
         cv.delete("all")
         ph = self.phase
         em = self.emote
+        # attach/webcam reach gesture: force a neutral idle body and drive the
+        # arm via reach=. Computed here, applied at the frame() call below.
+        reach_kw = None
+        reach_blend = 0.0
+        if self._reach is not None:
+            _rdeg, _rthumb, reach_blend = self._reach_render()
+            reach_kw = {"deg": _rdeg, "thumb": _rthumb}
+            em = "idle"
         dx = 0.0
         rofl_ring_drop = 0.0   # set in the rofl branch; ring section reads it
         if em == "excited":
@@ -1666,7 +2267,13 @@ class Buddy:
         frame = self.skin.frame(em, blinking, wave_angle,
                                 self.ant_a, self.ant_b, turn, wipe, yawn,
                                 nausea, pant, spin, push, sad, surprise,
-                                plead, scare, droop, scheme)
+                                plead, scare, droop, scheme, reach=reach_kw)
+        if reach_kw is not None and reach_blend > 0.0:
+            # crossfade the reach arm into the normal resting arm at the ends
+            # of the gesture (the two sculpts differ, so a hard swap would pop)
+            idle_fr = self.skin.frame("idle", blinking, None,
+                                      self.ant_a, self.ant_b)
+            frame = Image.blend(frame, idle_fr, min(1.0, reach_blend))
         bg = Image.new("RGB", (self.w, self.h), TRANS_RGB)
         if em == "rofl":
             # TRUE tumble: a full continuous rotation of the actual
