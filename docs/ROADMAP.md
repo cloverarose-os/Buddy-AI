@@ -181,9 +181,19 @@ hold (no animation needed while frozen). Animation 2 plays after the dialog
 closes. So we never animate against a frozen loop.
 
 **What represents the file (decided):**
-- **Thumbnail preferred** (real image scaled onto the paw).
-- **Type-icon fallback** (guaranteed): camera icon for a webcam snap, picture
-  icon for an image file, later text/doc icons, etc. Branch on file type.
+- **Thumbnail preferred** whenever the file HAS a meaningful visual (image
+  files, webcam snaps): real image scaled onto the paw.
+- **Type-icon** otherwise. Important nuance: the icon is NOT merely an
+  error-fallback. It's the CORRECT primary representation for whole categories
+  of files that can't be thumbnailed at all - a .txt, .pdf, .xlsx, an audio
+  clip: there's nothing to shrink onto the paw, so a symbol for that type IS
+  the right call. Two roads lead to an icon:
+    1. thumbnailing a visual file failed for some reason (true fallback), OR
+    2. the type is inherently non-visual and an icon was always correct.
+  Both resolve to "pick the icon for this file type," so the type-branching
+  logic is load-bearing and built in from the start (camera icon for a webcam
+  snap, picture icon for an image that couldn't thumbnail, doc/sheet/audio
+  icons for those types, etc.).
 
 **Future (maybe next): attach ANY useful file type**
 Not just images - text files, docs, anything fed to the model as context. The
